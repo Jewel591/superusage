@@ -18,6 +18,9 @@ scheme for Run, Profile, Analyze, and Archive.
 
 The project keeps the Swift package source layout. `UsageSync` and the `SuperUsage` module are built
 as internal frameworks, while `Sources/SuperUsageApp` contains the thin macOS app entry point.
+Because `SuperUsage` dynamically links Sparkle, the app target explicitly embeds and signs
+`Sparkle.framework`. A post-build verification script fails the build if that runtime dependency is
+missing or has an invalid signature.
 
 ## Fixed Apple identity
 

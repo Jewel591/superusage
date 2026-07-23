@@ -252,6 +252,7 @@
 		F414FB9AF13BBF1223063267 /* LayoutPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 559F0402A8D3258CB322511A /* LayoutPersistence.swift */; };
 		F56D8AD47306DC09C47CB5F3 /* ScreenCaptureProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F07F8D1CDC09DFAC330FA9D /* ScreenCaptureProbe.swift */; };
 		F6246724B0A3A391B6E4856B /* CursorAuthStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D14C412BA69DA520DAE9D7 /* CursorAuthStore.swift */; };
+		F65953E13AF4663552556960 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8331640E03950F6DD14D6E6E /* Sparkle */; };
 		F68DCB28AA98B2A8188CB412 /* TelemetryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04A90369B97FB5878933ABB7 /* TelemetryStore.swift */; };
 		F7268D486887FA9FFA6E1B51 /* OpenRouterAuthStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA5E90D276103BAAFEDC466 /* OpenRouterAuthStore.swift */; };
 		FB5BD4CB16F0D0CB5F855F05 /* WidgetRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9775DD3D1FFF32C8E31E6A0C /* WidgetRegistry.swift */; };
@@ -555,6 +556,7 @@
 			files = (
 				939757B0C9F5F0DC8D34021D /* SuperUsageCore.framework in Frameworks */,
 				6CFDE1839CB4A4BE9232C6FE /* UsageSync.framework in Frameworks */,
+				F65953E13AF4663552556960 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1057,6 +1059,7 @@
 				8D85C9011E70779291CE0478 /* Sources */,
 				891DD8060BB4E12322A8609B /* Frameworks */,
 				1C0139978D866C8B744E6BD2 /* Embed Frameworks */,
+				B5A8C3C04263B659AFB40F33 /* Verify Embedded Frameworks */,
 			);
 			buildRules = (
 			);
@@ -1066,6 +1069,7 @@
 			);
 			name = superUsage;
 			packageProductDependencies = (
+				8331640E03950F6DD14D6E6E /* Sparkle */,
 			);
 			productName = superUsage;
 			productReference = 31D87D60FDB1A105E0CBB20E /* superUsage.app */;
@@ -1150,6 +1154,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B5A8C3C04263B659AFB40F33 /* Verify Embedded Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Verify Embedded Frameworks";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "#!/usr/bin/env bash\nset -euo pipefail\n\n# The app links Sparkle indirectly through SuperUsageCore.framework. Xcode can therefore complete\n# the link step even when Sparkle is absent from the final app bundle, but dyld will abort at launch.\n# Keep this packaging contract as a build-time assertion so the failure is caught before Run/Archive.\n\nAPP_BUNDLE=\"${TARGET_BUILD_DIR:?TARGET_BUILD_DIR is required}/${WRAPPER_NAME:?WRAPPER_NAME is required}\"\nSPARKLE_FRAMEWORK=\"$APP_BUNDLE/Contents/Frameworks/Sparkle.framework\"\nSPARKLE_BINARY=\"$SPARKLE_FRAMEWORK/Sparkle\"\n\nif [[ ! -f \"$SPARKLE_BINARY\" ]]; then\n  echo \"error: Sparkle.framework is missing from $APP_BUNDLE/Contents/Frameworks\" >&2\n  exit 1\nfi\n\nif [[ \"${CODE_SIGNING_ALLOWED:-YES}\" != \"NO\" ]]; then\n  if ! /usr/bin/codesign --verify --strict \"$SPARKLE_FRAMEWORK\"; then\n    echo \"error: embedded Sparkle.framework has an invalid code signature\" >&2\n    exit 1\n  fi\nfi\n\necho \"Verified embedded Sparkle.framework\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		04FEAA1DE35ADB802A234202 /* Sources */ = {
@@ -1784,6 +1810,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 80F51A98F0D6E2ED7E7EC3F0 /* XCRemoteSwiftPackageReference "posthog-ios" */;
 			productName = PostHog;
+		};
+		8331640E03950F6DD14D6E6E /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4903608C36C060B553CC70B2 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 		D8F15A69B7407C0D06E5C312 /* KeyboardShortcuts */ = {
 			isa = XCSwiftPackageProductDependency;

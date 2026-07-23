@@ -84,6 +84,15 @@ targets:
     dependencies:
       - target: SuperUsageCore
       - target: UsageSync
+      - package: Sparkle
+        # Sparkle is a binary XCFramework product. Linking it directly makes Xcode's package
+        # integration copy and sign Sparkle.framework; a separate XcodeGen embed phase incorrectly
+        # looks for the synthetic "Sparkle-product" wrapper instead of the framework artifact.
+        embed: false
+    postBuildScripts:
+      - path: script/verify_xcode_app_bundle.sh
+        name: Verify Embedded Frameworks
+        basedOnDependencyAnalysis: false
     entitlements:
       path: Xcode/SuperUsage.entitlements
       properties:
