@@ -1,0 +1,33 @@
+name: SuperUsageMacSigningBootstrap
+options:
+  deploymentTarget:
+    macOS: "15.0"
+configs:
+  Debug: debug
+settings:
+  base:
+    DEVELOPMENT_TEAM: C554753V8P
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+targets:
+  SuperUsageMacSigningBootstrap:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+    entitlements:
+      path: SuperUsageMacSigningBootstrap.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.weisenjoytech.usage.sync
+        com.apple.developer.icloud-container-environment: Development
+        com.apple.developer.icloud-services:
+          - CloudKit
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: superUsage Signing Bootstrap
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.weisenjoytech.superusage
+        PRODUCT_NAME: SuperUsageMacSigningBootstrap
