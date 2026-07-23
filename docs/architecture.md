@@ -5,8 +5,10 @@ A high-level map of how SuperUsage is put together, for people working on the co
 
 ## The shape of the app
 
-SuperUsage is a SwiftPM package with a shared module and two thin executables — there is no Xcode project.
-The main executable is a menu-bar app: a SwiftUI interface hosted inside an AppKit status item and panel.
+SuperUsage keeps its implementation in a Swift package and ships the macOS app through
+`superUsage.xcodeproj`. The Xcode app target owns signing, CloudKit capabilities, Run, and Archive;
+the shared package continues to provide the core module, sync library, CLI, and tests. The main
+executable is a menu-bar app: a SwiftUI interface hosted inside an AppKit status item and panel.
 The code is grouped by role:
 
 - `App/` — startup and the AppKit bridge (status item, panel, the app entry point).

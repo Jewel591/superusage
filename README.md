@@ -27,20 +27,35 @@ Requirements:
 
 - macOS 15 or later
 - Swift 6.2 toolchain
+- Xcode 27 or later for the app project
+
+Open `superUsage.xcodeproj` in Xcode, select the `superUsage` scheme, and use Run or
+Product → Archive. Signing is configured for the company team `C554753V8P`; the app target owns the
+CloudKit capability and `iCloud.com.weisenjoytech.usage.sync` container.
+
+The committed project is generated from `project.yml`. After changing targets or build settings,
+regenerate it with [XcodeGen](https://github.com/yonaskolb/XcodeGen):
+
+```bash
+xcodegen generate --spec project.yml
+```
+
+The Swift package remains available for library, CLI, and test development:
 
 ```bash
 swift build
 swift test
 ```
 
-The local signed app-bundle script requires an Apple Development identity and a matching
-provisioning profile:
+The older local app-bundle script remains available for command-line debugging:
 
 ```bash
 ./script/build_and_run.sh build
 ```
 
 Forks can use `swift build` and `swift test` without Apple signing credentials.
+See [Xcode project and signing](docs/xcode-project.md) for identifiers, archive validation, and the
+current development-device requirement.
 
 ## Privacy
 

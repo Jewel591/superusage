@@ -52,10 +52,10 @@ values rather than managed objects, keeping the planned UI redesign independent 
 All new resources must belong to Chengdu Weisen Quwan Technology Co., Ltd:
 
 - Team ID: `C554753V8P`
-- Planned macOS bundle ID: `com.weisenjoytech.superusage`
+- Registered macOS bundle ID: `com.weisenjoytech.superusage`
 - Existing Cursornow mobile bundle ID: `com.weisenjoytech.Cursornow`
 - Existing Cursornow App Store Apple ID: `6746765552`
-- Planned shared container: `iCloud.com.weisenjoytech.usage.sync`
+- Registered shared container: `iCloud.com.weisenjoytech.usage.sync`
 
 Never create or sign these resources with the personal team `TP656CVH5C`. The previous personal-team
 container `iCloud.com.linliao.openusage.sync` was only an MVP probe and is not part of this product.
@@ -63,18 +63,18 @@ container `iCloud.com.linliao.openusage.sync` was only an MVP probe and is not p
 ## Implementation status
 
 The snapshot model, CloudKit-backed Core Data repository, Mac publisher, and replaceable mobile/watch
-prototype have been exercised during MVP development. The prototype proved the direction but did not
-establish the enterprise product resources.
+prototype have been exercised during MVP development. The macOS App ID and shared container now exist
+under the enterprise team, and the formal Xcode app project produces a matching managed development
+profile.
 
 Before a signed end-to-end enterprise build:
 
-1. Register the planned macOS bundle ID and shared CloudKit container under team `C554753V8P`.
-2. Assign the container to both superUsage and the existing Cursornow identifiers.
-3. Create fresh development profiles with the CloudKit entitlement and explicit `Development`
-   environment.
-4. Integrate the tagged `UsageSync` package into the private Cursornow repository.
-5. Verify a real Mac publish and iPhone read using the same iCloud account.
-6. Validate the schema, then deploy it to Production before external distribution.
+1. Register the development Mac in team `C554753V8P` so Xcode Run can create a device-qualified
+   profile.
+2. Confirm the shared container is assigned to the existing Cursornow identifier.
+3. Integrate the tagged `UsageSync` package into the private Cursornow repository.
+4. Verify a real Mac publish and iPhone read using the same iCloud account.
+5. Validate the schema, then deploy it to Production before external distribution.
 
 WatchConnectivity can be added later as a phone-to-Watch refresh optimization. It does not change the
 Mac-only authority rule.

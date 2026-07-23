@@ -1,0 +1,138 @@
+name: superUsage
+
+options:
+  deploymentTarget:
+    macOS: "15.0"
+  groupSortPosition: top
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: C554753V8P
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CLANG_ENABLE_MODULES: YES
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 3.0.1
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.9.4
+  PostHog:
+    url: https://github.com/PostHog/posthog-ios.git
+    from: 3.62.0
+
+targets:
+  UsageSync:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/UsageSync
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.weisenjoytech.superusage.UsageSync
+        PRODUCT_MODULE_NAME: UsageSync
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+
+  SuperUsageCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/SuperUsage
+        excludes:
+          - Resources
+      - path: Sources/SuperUsage/Resources/ProviderIcons
+        type: folder
+        buildPhase: resources
+      - path: Sources/SuperUsage/Resources/pricing_supplement.json
+        buildPhase: resources
+      - path: Sources/SuperUsage/Resources/pricing_litellm_snapshot.json
+        buildPhase: resources
+      - path: Sources/SuperUsage/Resources/pricing_models_dev_snapshot.json
+        buildPhase: resources
+    dependencies:
+      - target: UsageSync
+      - package: KeyboardShortcuts
+      - package: Sparkle
+      - package: PostHog
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.weisenjoytech.superusage.SuperUsage
+        PRODUCT_NAME: SuperUsage
+        PRODUCT_MODULE_NAME: SuperUsage
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) SUPERUSAGE_XCODE_PROJECT"
+
+  superUsage:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/SuperUsageApp
+    dependencies:
+      - target: SuperUsageCore
+      - target: UsageSync
+    entitlements:
+      path: Xcode/SuperUsage.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.weisenjoytech.usage.sync
+        com.apple.developer.icloud-services:
+          - CloudKit
+    info:
+      path: Xcode/Info.plist
+      properties:
+        CFBundleDisplayName: superUsage
+        CFBundleName: superUsage
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "15.0"
+        LSUIElement: true
+        NSHighResolutionCapable: true
+        NSPrincipalClass: NSApplication
+        SuperUsageCloudKitContainerIdentifier: iCloud.com.weisenjoytech.usage.sync
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.weisenjoytech.superusage
+        PRODUCT_NAME: superUsage
+        PRODUCT_MODULE_NAME: SuperUsageApp
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "0"
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Xcode/SuperUsage.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: NO
+      configs:
+        Debug:
+          COPY_PHASE_STRIP: NO
+        Release:
+          COPY_PHASE_STRIP: YES
+
+schemes:
+  superUsage:
+    build:
+      targets:
+        superUsage: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

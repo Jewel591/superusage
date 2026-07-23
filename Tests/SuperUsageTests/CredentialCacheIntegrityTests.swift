@@ -222,7 +222,14 @@ final class AntigravityCredentialCacheIntegrityTests: XCTestCase {
         let fixedNow = now
         return AntigravityProvider(
             authStore: AntigravityAuthStore(keychain: keychain, files: files, now: { fixedNow }),
-            usageClient: AntigravityUsageClient(lsHTTP: http, http: http),
+            usageClient: AntigravityUsageClient(
+                lsHTTP: http,
+                http: http,
+                googleOAuthCredentials: GoogleOAuthClientCredentials(
+                    clientID: "test-client-id",
+                    clientSecret: "test-client-secret"
+                )
+            ),
             discovery: LanguageServerDiscovery(processRunner: CredentialEmptyProcessRunner()),
             now: { fixedNow }
         )

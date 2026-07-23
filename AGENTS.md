@@ -1,6 +1,7 @@
 # AGENTS.md
 
-superUsage is an open-source SwiftPM-based SwiftUI menu-bar app for macOS that shows AI provider
+superUsage is an open-source SwiftUI menu-bar app for macOS with a formal Xcode app project and a
+shared Swift package. It shows AI provider
 usage widgets (Claude, Codex, Cursor, Grok, Devin, and more).
 
 This file documents the engineering conventions for the project. Read it before contributing.
@@ -28,9 +29,8 @@ Sparkle appcast on `gh-pages`.
   Store records.
 - Keep `DEVELOPMENT_TEAM = C554753V8P` explicit in Xcode projects. Before a signed build, inspect the
   resolved build settings, certificate OU, and embedded provisioning profile.
-- The planned macOS Bundle ID is `com.weisenjoytech.superusage`. The shared CloudKit container is
-  planned as `iCloud.com.weisenjoytech.usage.sync`. Treat both as pending until their availability
-  and registration are confirmed in the enterprise team.
+- The registered macOS Bundle ID is `com.weisenjoytech.superusage`. The registered shared CloudKit
+  container is `iCloud.com.weisenjoytech.usage.sync`.
 
 ### Guardrails (do not break)
 - **Never choose or increase a release version on your own initiative.** Propose a version and wait
@@ -43,7 +43,12 @@ Sparkle appcast on `gh-pages`.
 
 ## Architecture
 
-- SwiftPM executable target; SwiftUI content hosted in an AppKit-owned `NSStatusItem` + custom key-capable `NSPanel`.
+- The distributable macOS app is the `superUsage` target in `superUsage.xcodeproj`. `project.yml` is
+  the source of truth for the generated project; regenerate with `xcodegen generate --spec
+  project.yml` after changing targets, capabilities, or build settings. Do not hand-edit the
+  generated `project.pbxproj`.
+- SwiftPM remains the source layout for shared modules, CLI tools, and tests. The SwiftUI content is
+  hosted in an AppKit-owned `NSStatusItem` + custom key-capable `NSPanel`.
 - Swift 6 with strict concurrency.
 - Providers implement the small `ProviderRuntime` protocol: an auth store reads credentials already on the user's machine, a usage client calls the provider's API, and a mapper normalizes the response into `MetricLine` values. The UI renders those normalized values.
 - See `docs/` for behavior docs and the developer docs (architecture overview, adding a provider).
@@ -94,6 +99,9 @@ Conventions for the per-provider modules under `Sources/SuperUsage/Providers/<Na
 
 ## Running / Testing Changes
 
+- Prefer the `superUsage` Xcode scheme for app Run, Signing & Capabilities, and Archive. The scheme
+  must resolve `DEVELOPMENT_TEAM = C554753V8P`, bundle ID `com.weisenjoytech.superusage`, and CloudKit
+  container `iCloud.com.weisenjoytech.usage.sync`.
 - There is no hot reload. The app is a long-lived menu-bar process, so **every code change requires a full rebuild and restart of the running app** to take effect — kill the running instance, rebuild, and relaunch before testing.
 
 ## Pull Requests

@@ -13,21 +13,23 @@ the snapshot generation time and retain the last valid local replica.
 
 ## Development and release setup
 
-The planned resources belong to Chengdu Weisen Quwan Technology Co., Ltd:
+The resources belong to Chengdu Weisen Quwan Technology Co., Ltd:
 
 - Team ID: `C554753V8P`
 - macOS bundle ID: `com.weisenjoytech.superusage`
 - existing mobile bundle ID: `com.weisenjoytech.Cursornow`
 - shared CloudKit container: `iCloud.com.weisenjoytech.usage.sync`
 
-These identifiers are present in source and signing templates but still need to be registered and
-assigned in the Apple developer portal. Do not use the personal team `TP656CVH5C` or the old MVP
-container `iCloud.com.linliao.openusage.sync`.
+The macOS App ID and shared container have been registered under team `C554753V8P`, and Xcode can
+produce a managed Mac development profile containing both identifiers. Do not use the personal team
+`TP656CVH5C` or the old MVP container `iCloud.com.linliao.openusage.sync`.
 
-For development, create a `MAC_APP_DEVELOPMENT` profile that includes the Mac and explicitly selects
-the CloudKit `Development` environment. For direct distribution, create a `MAC_APP_DIRECT` profile
-after the container and production schema are ready. The build script selects the newest matching
-installed development profile:
+For normal development and archiving, use the `superUsage` scheme in `superUsage.xcodeproj`; Xcode
+owns automatic signing and the CloudKit capability. Running on a specific Mac requires that Mac to
+be registered in the enterprise team and included in its development profile. For direct
+distribution, create a `MAC_APP_DIRECT` profile after the container and production schema are ready.
+
+The legacy build script selects the newest matching installed development profile:
 
 ```bash
 ./script/build_and_run.sh

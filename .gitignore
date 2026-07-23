@@ -26,6 +26,11 @@ node_modules/
 *.xcresult
 .build-test/
 work/
+DerivedData/
+.build-xcode/
+.build-xcode-*/
+*.xcuserstate
+xcuserdata/
 
 # Local appcast / Sparkle feed output
 feed/

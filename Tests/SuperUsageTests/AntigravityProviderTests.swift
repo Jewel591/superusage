@@ -379,7 +379,14 @@ final class AntigravityProviderTests: XCTestCase {
         let wrapped = "go-keyring-base64:" + Data(inner.utf8).base64EncodedString()
         let provider = AntigravityProvider(
             authStore: AntigravityAuthStore(keychain: FakeKeychain(wrapped), files: FakeFiles()),
-            usageClient: AntigravityUsageClient(lsHTTP: routing, http: routing),
+            usageClient: AntigravityUsageClient(
+                lsHTTP: routing,
+                http: routing,
+                googleOAuthCredentials: GoogleOAuthClientCredentials(
+                    clientID: "test-client-id",
+                    clientSecret: "test-client-secret"
+                )
+            ),
             discovery: LanguageServerDiscovery(processRunner: EmptyProcessRunner())
         )
         let snapshot = await provider.refresh()
@@ -401,7 +408,14 @@ final class AntigravityProviderTests: XCTestCase {
         let wrapped = "go-keyring-base64:" + Data(inner.utf8).base64EncodedString()
         let provider = AntigravityProvider(
             authStore: AntigravityAuthStore(keychain: FakeKeychain(wrapped), files: FakeFiles()),
-            usageClient: AntigravityUsageClient(lsHTTP: routing, http: routing),
+            usageClient: AntigravityUsageClient(
+                lsHTTP: routing,
+                http: routing,
+                googleOAuthCredentials: GoogleOAuthClientCredentials(
+                    clientID: "test-client-id",
+                    clientSecret: "test-client-secret"
+                )
+            ),
             discovery: LanguageServerDiscovery(processRunner: EmptyProcessRunner())
         )
         let snapshot = await provider.refresh()

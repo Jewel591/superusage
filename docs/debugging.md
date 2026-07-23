@@ -5,7 +5,10 @@ chasing a startup or refresh problem.
 
 ## Run a local build
 
-The project script owns the build/run loop. From the repo root:
+For normal app development, open `superUsage.xcodeproj`, select the `superUsage` scheme, and use
+Product → Run. This is the primary path for capabilities, signing, debugging, and Archive.
+
+The command-line script remains useful for a quick staged bundle. From the repo root:
 
 ```sh
 ./script/build_and_run.sh          # build and launch the dev app from dist/
@@ -18,6 +21,11 @@ The script builds a signed app bundle under `dist/` and launches it in place —
 (`com.weisenjoytech.superusage`), so it keeps its own settings and keychain and never disturbs a
 released superUsage. It ships no update feed, so it never checks for updates — test updates with a real
 signed, notarized release build.
+
+If Xcode reports that **My Mac is not registered**, an Account Holder or Admin for team
+`C554753V8P` must register this Mac's Provisioning UDID or grant the required device-management
+permission. Generic Mac builds and archives can still succeed, but Run requires a development profile
+that contains this Mac.
 
 ## Stream logs
 

@@ -35,7 +35,17 @@ extension Bundle {
                 AppLog.warn(.config, "ignoring resource bundle at \(base.lastPathComponent): missing expected resources")
             }
         }
+        let frameworkBundle = Bundle(for: ResourceBundleToken.self)
+        if isValidSuperUsageResourceBundle(frameworkBundle) {
+            return frameworkBundle
+        }
+#if SUPERUSAGE_XCODE_PROJECT
+        // Xcode copies the JSON resources to SuperUsage.framework/Resources and keeps ProviderIcons as
+        // a folder reference. There is no SwiftPM-generated `Bundle.module` in this build mode.
+        return frameworkBundle
+#else
         return .module
+#endif
     }()
 }
 
