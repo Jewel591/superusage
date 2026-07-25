@@ -118,8 +118,12 @@ Ready still means the same thing it means everywhere else, and none of it is wai
 - CI is green.
 - The PR is out of draft.
 
-What changes is only who presses Merge. If a PR should *not* land yet, keep it in draft or label it
-`hold` — those still mean stop.
+What changes is only who presses Merge. If a PR should *not* land yet, keep it in draft or give it
+the `hold` label — those still mean stop, and now they are the *only* thing that means stop, since
+nothing else pauses between Ready and merged.
+
+None of this is enforced by GitHub. `main` has no branch protection, and `script/apply_github_protections.sh`
+has never been run; the gates above hold because agents follow them.
 
 Every PR description must follow this structure so reviewers can skim it quickly:
 
