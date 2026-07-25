@@ -73,9 +73,11 @@ def main() -> int:
         print(f"  {identity}")
         print(f"    Package.resolved                         {describe(swiftpm_pin)}")
         print(f"    superUsage.xcodeproj/…/Package.resolved  {describe(xcode_pin)}")
+    print("\nTests and the shipped app would build against different dependency graphs.")
+    if any(swiftpm_pin is None or xcode_pin is None for _, swiftpm_pin, xcode_pin in disagreements):
+        print("A dependency missing from one lockfile is resolved freshly on that build path.")
     print(
-        "\nTests and the shipped app would build against different versions — an unpinned dependency\n"
-        "gets resolved freshly on that build path. To sync, resolve both:\n"
+        "To sync, resolve both:\n"
         "  swift package resolve\n"
         "  xcodebuild -project superUsage.xcodeproj -scheme superUsage -resolvePackageDependencies\n"
         "then commit both files. If the Xcode one disappears after that resolve instead of showing up "
