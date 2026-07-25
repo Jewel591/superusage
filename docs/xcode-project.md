@@ -52,9 +52,14 @@ out while the resolve is running and stage the copy directly, since the working-
 survive long enough for `git add`:
 
 ```bash
-git hash-object -w /path/to/copy | xargs -I{} git update-index --add --cacheinfo 100644,{},\
-  superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+LOCK=superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+git hash-object -w /path/to/copy | xargs -I{} git update-index --add --cacheinfo 100644,{},"$LOCK"
+git checkout -- "$LOCK"   # index now holds the new content; put it back in the working tree too
 ```
+
+Don't skip that last line. `update-index` alone stages the new content while the working tree still
+shows the file as deleted (`git status` reports `MD`), and the next `git add -A` would quietly stage
+the deletion back over your update.
 
 ## Fixed Apple identity
 

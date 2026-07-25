@@ -28,10 +28,10 @@ XCODE = ROOT / "superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Pa
 
 def pins(path: Path) -> dict[str, tuple[str, str]]:
     if not path.exists():
-        # Locally, `xcodebuild -resolvePackageDependencies` writes the Xcode file and then removes it
-        # again, so it can vanish from a working tree and be committed as a deletion by accident. A
-        # missing file is a failure here, not a skip: an absent lockfile means Xcode Cloud resolves
-        # release builds freshly, against whatever version happens to be newest that day.
+        # A missing file is a failure here, not a skip: an absent lockfile means Xcode Cloud resolves
+        # release builds freshly, against whatever version happens to be newest that day. The Xcode one
+        # has been committed as a deletion before — in some working copies it vanishes on its own after
+        # `xcodebuild -resolvePackageDependencies` (see docs/xcode-project.md).
         sys.exit(f"missing lockfile: {path.relative_to(ROOT)}")
     data = json.loads(path.read_text())
     resolved = {
@@ -66,8 +66,8 @@ def main() -> int:
         "\nTests and the shipped app would build against different versions. To sync, resolve both:\n"
         "  swift package resolve\n"
         "  xcodebuild -project superUsage.xcodeproj -scheme superUsage -resolvePackageDependencies\n"
-        "then commit both files (see docs/xcode-project.md — the Xcode one needs care, xcodebuild "
-        "deletes it right after writing it)."
+        "then commit both files. If the Xcode one disappears after that resolve instead of showing up "
+        "modified, see docs/xcode-project.md."
     )
     return 1
 
