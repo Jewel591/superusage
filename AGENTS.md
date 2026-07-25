@@ -106,6 +106,21 @@ Conventions for the per-provider modules under `Sources/SuperUsage/Providers/<Na
 
 ## Pull Requests
 
+### Merging (this repository merges its own PRs)
+
+superUsage is **not** on the Shipley release train. There is no separate release owner to hand a
+finished PR to, and no daily sweep that will pick it up — so an agent that opens a PR here also
+merges it. Once the PR is Ready, merge it; do not park it waiting for someone else.
+
+Ready still means the same thing it means everywhere else, and none of it is waived:
+
+- Codex review reached a clean verdict, and the PR's head commit carries a `codex-passed` status.
+- CI is green.
+- The PR is out of draft.
+
+What changes is only who presses Merge. If a PR should *not* land yet, keep it in draft or label it
+`hold` — those still mean stop.
+
 Every PR description must follow this structure so reviewers can skim it quickly:
 
 - **TL;DR** — open with a one- or two-sentence plain-English summary of the change.
