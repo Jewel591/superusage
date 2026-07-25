@@ -89,6 +89,11 @@ struct QuotaHistoryChart: View {
         // Pinned to the full window so a nearly-drained quota reads as nearly drained, instead of the
         // axis auto-scaling a 3%-to-1% slide into a dramatic cliff.
         .chartYScale(domain: 0...1)
+        // The x axis is pinned to the range the user picked, not to the data. Letting it auto-fit makes
+        // ten minutes of history fill a chart labelled "24h", and makes a series that stopped updating
+        // hours ago end flush against the right edge as though it were current. Pinned, missing time
+        // shows up as the blank it is.
+        .chartXScale(domain: series.window)
         .chartYAxis {
             AxisMarks(values: [0, 0.25, 0.5, 0.75, 1]) { value in
                 AxisGridLine()

@@ -13,7 +13,9 @@
 - Every successful refresh also records one point per metric that has a limit into the local
   [Usage History](quota-history.md) database, which is what the trend charts are drawn from. A refresh
   served from cache records nothing (no new observation happened), and a failed one records nothing
-  either — that's what leaves an honest gap in the trend instead of repeating the last good value.
+  either — that's what leaves an honest gap in the trend instead of repeating the last good value. A
+  refresh driven by the `superusage` command records into that same history, so it makes no difference
+  to the chart whether the app or the CLI did the asking.
 
 ## Caching
 

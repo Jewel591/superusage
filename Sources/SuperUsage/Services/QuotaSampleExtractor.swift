@@ -15,14 +15,25 @@ enum QuotaSampleExtractor {
     ///   - descriptors: the provider's registry descriptors, which supply the stable metric ids.
     ///   - capturedAt: the observation instant. Callers pass the snapshot's `refreshedAt` so the sample
     ///     is stamped with when the data was actually fetched, not when it happened to be written.
+    ///   - identityKey: the account signed in at this card right now, or `nil` when unresolved.
     static func samples(
         from snapshot: ProviderSnapshot,
         descriptors: [WidgetDescriptor],
-        capturedAt: Date
+        capturedAt: Date,
+        identityKey: String?
     ) -> [QuotaSample] {
         // An error snapshot carries only its error badge; guarding here (rather than trusting callers)
         // keeps the "failures leave gaps" invariant true at the single place samples are minted.
         guard !snapshot.lines.contains(where: \.isError) else { return [] }
+
+        // An account-first family whose identity we can't resolve records *nothing*. History is
+        // append-only: a bare `claude` card is a different account after a swap, so writing an
+        // unattributable sample would splice two people's usage into one line with no way to separate
+        // them later. A gap is recoverable; a mixed series is not.
+        let family = ProviderAccountID.family(of: snapshot.providerID)
+        let isAccountAware = ProviderAccountID.families.contains(family)
+        guard !isAccountAware || identityKey != nil else { return [] }
+        let accountDigest = identityKey.map(ProviderAccountID.hash8)
 
         return descriptors.compactMap { descriptor in
             guard let line = snapshot.line(label: descriptor.metricLabel),
@@ -37,8 +48,13 @@ enum QuotaSampleExtractor {
             // their raw `used` — a dollar or count overage is real information.
             let normalizedUsed = format == .percent ? ProviderParse.clampPercent(used) : used
             return QuotaSample(
-                scopeKey: QuotaSeriesKey.make(providerID: snapshot.providerID, metricID: descriptor.id),
+                scopeKey: QuotaSeriesKey.make(
+                    providerID: snapshot.providerID,
+                    accountDigest: accountDigest,
+                    metricID: descriptor.id
+                ),
                 providerID: snapshot.providerID,
+                accountDigest: accountDigest,
                 metricID: descriptor.id,
                 capturedAt: capturedAt,
                 used: normalizedUsed,

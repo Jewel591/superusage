@@ -33,6 +33,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
     private func sample(
         scopeKey: String = "claude|claude.session",
         providerID: String = "claude",
+        accountDigest: String? = "aaaaaaaa",
         metricID: String = "claude.session",
         minutesAfterStart: Double,
         used: Double,
@@ -43,6 +44,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         QuotaSample(
             scopeKey: scopeKey,
             providerID: providerID,
+            accountDigest: accountDigest,
             metricID: metricID,
             capturedAt: start.addingTimeInterval(minutesAfterStart * 60),
             used: used,
@@ -119,14 +121,62 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    /// The app and the `superusage` CLI are separate processes writing the same file, so a forced CLI
+    /// refresh can land the same observation the app is already writing. Dedup therefore has to hold at
+    /// the *store* level (a uniqueness constraint), not just within one recorder's in-memory context —
+    /// the second process has no idea what the first one queued.
+    func testDuplicateFromASecondStoreOnTheSameFileIsIgnored() async throws {
+        let second = QuotaHistoryStore(
+            configuration: QuotaHistoryStore.Configuration(name: "superUsageQuotaHistoryTests", storeURL: storeURL)
+        )
+        try await second.load()
+
+        try await store.record([sample(minutesAfterStart: 0, used: 10)])
+        try await second.record([sample(minutesAfterStart: 0, used: 10)])
+
+        let count = try await store.sampleCount()
+        XCTAssertEqual(count, 1)
+    }
+
+    /// The digest is what makes a row attributable after the fact — the key format could change, but a
+    /// row that already lost its account can never be re-attributed.
+    func testAccountDigestRoundTrips() async throws {
+        try await store.record([
+            sample(accountDigest: "deadbeef", minutesAfterStart: 0, used: 10),
+            sample(
+                scopeKey: "grok|grok.weekly",
+                providerID: "grok",
+                accountDigest: nil,
+                metricID: "grok.weekly",
+                minutesAfterStart: 0,
+                used: 20
+            )
+        ])
+
+        let claude = try await store.samples(
+            scopeKey: "claude|claude.session",
+            from: start.addingTimeInterval(-60),
+            to: start.addingTimeInterval(60)
+        )
+        let grok = try await store.samples(
+            scopeKey: "grok|grok.weekly",
+            from: start.addingTimeInterval(-60),
+            to: start.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(claude.first?.accountDigest, "deadbeef")
+        XCTAssertNil(grok.first?.accountDigest)
+    }
+
     /// Two accounts of the same provider, or two metrics of one provider, must never share a series.
+    /// Note the two accounts here sit on the *same* card id (`claude`, a family's default home) — that is
+    /// the case the scope key has to separate, since the card id alone can't.
     func testSeriesAreReadIndependently() async throws {
         try await store.record([
             sample(minutesAfterStart: 0, used: 10),
             sample(
-                scopeKey: "claude@ab12cd34|claude@ab12cd34.session",
-                providerID: "claude@ab12cd34",
-                metricID: "claude@ab12cd34.session",
+                scopeKey: "claude@ab12cd34|claude.session",
+                accountDigest: "ab12cd34",
                 minutesAfterStart: 0,
                 used: 90
             ),

@@ -7,6 +7,9 @@ import XCTest
 final class QuotaSampleExtractorTests: XCTestCase {
     private let provider = Provider(id: "claude", displayName: "Claude", icon: .providerMark("claude"))
     private let capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    /// Claude is an account-first family, so every sample has to be attributable to an account.
+    private let identityKey = "account-a"
+    private var accountScope: String { ProviderAccountID.make(family: "claude", identityKey: identityKey) }
 
     private var sessionDescriptor: WidgetDescriptor {
         .percent(id: "claude.session", provider: provider, title: "Session")
@@ -31,7 +34,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
             descriptors: [sessionDescriptor, extraDescriptor],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
         XCTAssertEqual(samples.count, 2)
@@ -39,13 +43,13 @@ final class QuotaSampleExtractorTests: XCTestCase {
         // The stable descriptor id, not the display label — a metric reworded in a later release must
         // stay the same series rather than starting a new one.
         XCTAssertEqual(session.metricID, "claude.session")
-        XCTAssertEqual(session.scopeKey, "claude|claude.session")
+        XCTAssertEqual(session.scopeKey, "\(accountScope)|claude.session")
         XCTAssertEqual(session.used, 40)
         XCTAssertEqual(session.limit, 100)
         XCTAssertEqual(session.resetsAt, resetsAt)
         XCTAssertEqual(session.remainingFraction, 0.6)
 
-        XCTAssertEqual(samples[1].scopeKey, "claude|claude.extra")
+        XCTAssertEqual(samples[1].scopeKey, "\(accountScope)|claude.extra")
         XCTAssertEqual(samples[1].remainingFraction, 0.75)
         XCTAssertNil(samples[1].resetsAt)
     }
@@ -58,7 +62,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
             descriptors: [sessionDescriptor],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
         XCTAssertTrue(samples.isEmpty)
@@ -85,7 +90,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
                 .badge(id: "claude.plan", provider: provider, title: "Plan"),
                 .usageTrend(provider: provider)
             ],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
         XCTAssertTrue(samples.isEmpty)
@@ -107,7 +113,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
             descriptors: [sessionDescriptor, extraDescriptor],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
         XCTAssertTrue(samples.isEmpty)
@@ -127,7 +134,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
             descriptors: [sessionDescriptor],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
         XCTAssertEqual(samples.first?.used, 100)
@@ -146,7 +154,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
             descriptors: [extraDescriptor],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
         XCTAssertEqual(samples.first?.used, 62)
@@ -154,16 +163,14 @@ final class QuotaSampleExtractorTests: XCTestCase {
         XCTAssertEqual(samples.first?.remainingFraction, 0)
     }
 
-    /// Two accounts of the same provider carry different card ids, so their series can never merge.
-    func testAccountCardsGetDistinctSeries() {
-        let accountProvider = Provider(id: "claude@ab12cd34", displayName: "Claude", icon: .providerMark("claude"))
-        let descriptor = WidgetDescriptor.percent(
-            id: "claude@ab12cd34.session",
-            provider: accountProvider,
-            title: "Session"
-        )
+    /// An extra account card already carries its own digest, so its key is unchanged by account scoping —
+    /// the id re-derives to itself.
+    func testAccountCardKeepsItsOwnCardIDAsScope() {
+        let cardID = ProviderAccountID.make(family: "claude", identityKey: identityKey)
+        let accountProvider = Provider(id: cardID, displayName: "Claude", icon: .providerMark("claude"))
+        let descriptor = WidgetDescriptor.percent(id: "\(cardID).session", provider: accountProvider, title: "Session")
         let snapshot = ProviderSnapshot(
-            providerID: "claude@ab12cd34",
+            providerID: cardID,
             displayName: "Claude",
             lines: [.progress(label: "Session", used: 10, limit: 100, format: .percent)],
             refreshedAt: capturedAt
@@ -172,10 +179,90 @@ final class QuotaSampleExtractorTests: XCTestCase {
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
             descriptors: [descriptor],
-            capturedAt: capturedAt
+            capturedAt: capturedAt,
+            identityKey: identityKey
         )
 
-        XCTAssertEqual(samples.first?.scopeKey, "claude@ab12cd34|claude@ab12cd34.session")
-        XCTAssertEqual(QuotaSeriesKey.split("claude@ab12cd34|claude@ab12cd34.session")?.providerID, "claude@ab12cd34")
+        XCTAssertEqual(samples.first?.scopeKey, "\(cardID)|\(cardID).session")
+        XCTAssertEqual(QuotaSeriesKey.split("\(cardID)|\(cardID).session")?.accountScope, cardID)
+    }
+
+    /// The one that matters: the account holding a family's *default home* keeps the bare `claude` card
+    /// id for life, so after a sign-out and sign-in the same card is a different account. Keying history
+    /// by card id alone would append account B's usage onto account A's line — permanently, since a row
+    /// carries no way to tell them apart afterwards. History is append-only; there is no cleanup pass
+    /// that could separate them later.
+    func testDefaultCardSwappingAccountsStartsANewSeries() {
+        func sample(identityKey: String) -> QuotaSample? {
+            let snapshot = ProviderSnapshot(
+                providerID: "claude",
+                displayName: "Claude",
+                lines: [.progress(label: "Session", used: 40, limit: 100, format: .percent)],
+                refreshedAt: capturedAt
+            )
+            return QuotaSampleExtractor.samples(
+                from: snapshot,
+                descriptors: [sessionDescriptor],
+                capturedAt: capturedAt,
+                identityKey: identityKey
+            ).first
+        }
+
+        let a = sample(identityKey: "account-a")
+        let b = sample(identityKey: "account-b")
+
+        XCTAssertNotNil(a)
+        XCTAssertNotNil(b)
+        XCTAssertNotEqual(a?.scopeKey, b?.scopeKey)
+        // Both still report the card they came from; the account lives in its own column so a row stays
+        // attributable even if the key format ever changes.
+        XCTAssertEqual(a?.providerID, "claude")
+        XCTAssertEqual(b?.providerID, "claude")
+        XCTAssertEqual(a?.accountDigest, ProviderAccountID.hash8("account-a"))
+        XCTAssertEqual(b?.accountDigest, ProviderAccountID.hash8("account-b"))
+    }
+
+    /// An account-first card whose identity didn't resolve records nothing at all. A gap is recoverable;
+    /// a sample written under an unattributable bare `claude` is not — the next swap would silently
+    /// append a second account's usage to it.
+    func testUnresolvedIdentityOnAccountFamilyRecordsNothing() {
+        let snapshot = ProviderSnapshot(
+            providerID: "claude",
+            displayName: "Claude",
+            lines: [.progress(label: "Session", used: 40, limit: 100, format: .percent)],
+            refreshedAt: capturedAt
+        )
+
+        let samples = QuotaSampleExtractor.samples(
+            from: snapshot,
+            descriptors: [sessionDescriptor],
+            capturedAt: capturedAt,
+            identityKey: nil
+        )
+
+        XCTAssertTrue(samples.isEmpty)
+    }
+
+    /// Providers with no account model at all (Grok, Copilot, …) are unaffected: they have one identity
+    /// by construction, so a nil key is normal and must still record.
+    func testProviderWithoutAccountModelRecordsWithoutIdentity() {
+        let grok = Provider(id: "grok", displayName: "Grok", icon: .providerMark("grok"))
+        let descriptor = WidgetDescriptor.percent(id: "grok.weekly", provider: grok, title: "Weekly")
+        let snapshot = ProviderSnapshot(
+            providerID: "grok",
+            displayName: "Grok",
+            lines: [.progress(label: "Weekly", used: 30, limit: 100, format: .percent)],
+            refreshedAt: capturedAt
+        )
+
+        let samples = QuotaSampleExtractor.samples(
+            from: snapshot,
+            descriptors: [descriptor],
+            capturedAt: capturedAt,
+            identityKey: nil
+        )
+
+        XCTAssertEqual(samples.first?.scopeKey, "grok|grok.weekly")
+        XCTAssertNil(samples.first?.accountDigest)
     }
 }

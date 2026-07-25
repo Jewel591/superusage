@@ -20,6 +20,7 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
         QuotaSample(
             scopeKey: "claude|claude.session",
             providerID: "claude",
+            accountDigest: "aaaaaaaa",
             metricID: "claude.session",
             capturedAt: start.addingTimeInterval(minutesAfterStart * 60),
             used: used,
@@ -149,7 +150,7 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
             sample(minutesAfterStart: 130, used: 65)
         ]
 
-        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 180))
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 132))
 
         XCTAssertEqual(series.gaps.count, 1)
         XCTAssertEqual(series.gaps.first?.start, start.addingTimeInterval(5 * 60))
@@ -166,10 +167,54 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
             sample(minutesAfterStart: 10, used: 20)
         ]
 
-        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 30))
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 12))
 
         XCTAssertTrue(series.gaps.isEmpty)
         XCTAssertEqual(series.segments.count, 1)
+    }
+
+    /// The chart's x-axis runs to *now*, so a series whose last sample is hours old would otherwise
+    /// trail off into blank plot area that reads as "nothing was consumed". Silence right up to the
+    /// present is the same unmeasured hole as silence in the middle, and is banded the same way.
+    func testSilenceSinceTheLastSampleIsBandedThroughToNow() {
+        let samples = [
+            sample(minutesAfterStart: 0, used: 10),
+            sample(minutesAfterStart: 5, used: 15)
+        ]
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 125))
+
+        XCTAssertEqual(series.gaps.count, 1)
+        XCTAssertEqual(series.gaps.first?.start, start.addingTimeInterval(5 * 60))
+        XCTAssertEqual(series.gaps.first?.end, now(minutesAfterStart: 125))
+        // Still one continuous line — the hole is after the data, not inside it.
+        XCTAssertEqual(series.segments.count, 1)
+    }
+
+    /// The window is pinned to the range even when the data covers a sliver of it, so a two-sample
+    /// series doesn't stretch to fill 24 hours of chart and imply a burn rate 100× slower than reality.
+    func testWindowSpansTheFullRangeRegardlessOfCoverage() {
+        let samples = [sample(minutesAfterStart: 0, used: 10), sample(minutesAfterStart: 5, used: 15)]
+        let end = now(minutesAfterStart: 5)
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: end)
+
+        XCTAssertEqual(series.window.upperBound, end)
+        XCTAssertEqual(series.window.lowerBound, end.addingTimeInterval(-QuotaHistoryRange.day.duration))
+    }
+
+    /// A sample newer than `now` (clock skew, or a provider stamping the future) must not stretch the
+    /// window past the present — the chart would leave a permanent empty margin on the right.
+    func testSamplesAheadOfNowAreIgnored() {
+        let samples = [
+            sample(minutesAfterStart: 0, used: 10),
+            sample(minutesAfterStart: 60, used: 90)
+        ]
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 2))
+
+        XCTAssertEqual(series.window.upperBound, now(minutesAfterStart: 2))
+        XCTAssertEqual(series.latest?.remainingFraction, 0.9)
     }
 
     /// Across a gap a rolling window's drift is indistinguishable from a rollover, so the window-end
@@ -181,7 +226,7 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
             sample(minutesAfterStart: 180, used: 30, resetsAt: start.addingTimeInterval(180 * 60 + 3_600))
         ]
 
-        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 200))
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 182))
 
         XCTAssertEqual(series.gaps.count, 1)
         XCTAssertTrue(series.resets.isEmpty)
@@ -193,7 +238,7 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
             sample(minutesAfterStart: 180, used: 5)
         ]
 
-        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 200))
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 182))
 
         XCTAssertEqual(series.gaps.count, 1)
         XCTAssertEqual(series.resets, [start.addingTimeInterval(180 * 60)])
@@ -212,6 +257,62 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
 
         XCTAssertEqual(series.points.count, 1)
         XCTAssertEqual(series.latest?.remainingFraction, 0.5)
+    }
+
+    /// The recorder deliberately reads one bucket earlier than the range so the aggregator has a
+    /// neighbour just outside the window. Without it a rollover that happened at the window's left edge
+    /// is invisible — the series simply appears to begin there, and the pre-reset burn looks like it
+    /// continued into the new window.
+    func testResetStraddlingTheLeftEdgeIsDetectedFromTheOutOfWindowNeighbour() {
+        let end = now(minutesAfterStart: 60)
+        let samples = [
+            // Just outside the 24h window, nearly exhausted…
+            sample(minutesAfterStart: -1_400, used: 95),
+            // …and refilled by the first sample inside it.
+            sample(minutesAfterStart: 0, used: 5),
+            sample(minutesAfterStart: 5, used: 8)
+        ]
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: end)
+
+        XCTAssertEqual(series.resets, [start])
+        // The out-of-window sample informs the verdict but is never plotted: both in-window samples
+        // share one 15-minute bucket, so exactly one point comes out — the post-reset one.
+        XCTAssertEqual(series.points.count, 1)
+        XCTAssertEqual(series.points.first?.time, start.addingTimeInterval(5 * 60))
+        XCTAssertEqual(series.points.first?.remainingFraction, 0.92)
+        // The silence before the window's first sample is banded, clipped to what's visible.
+        XCTAssertEqual(series.gaps.first?.start, end.addingTimeInterval(-QuotaHistoryRange.day.duration))
+        XCTAssertEqual(series.gaps.first?.end, start)
+    }
+
+    /// A brand-new install has no earlier neighbour, and "we only started recording an hour ago" is not
+    /// a gap — banding it would tell the user data went missing that never existed.
+    func testNoLeadingGapIsInventedWhenHistorySimplyStartsThere() {
+        let samples = [
+            sample(minutesAfterStart: 0, used: 10),
+            sample(minutesAfterStart: 5, used: 15)
+        ]
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 7))
+
+        XCTAssertTrue(series.gaps.isEmpty)
+        XCTAssertTrue(series.resets.isEmpty)
+    }
+
+    /// A series that stopped being recorded entirely (provider removed, signed out) has nothing inside
+    /// the window — but that is one long hole, not "no history", and the difference is what tells the
+    /// user whether to go looking for a broken provider.
+    func testSeriesThatStoppedRecordingIsOneLongGapRatherThanEmpty() {
+        let samples = [sample(minutesAfterStart: -1_400, used: 40)]
+        let end = now(minutesAfterStart: 60)
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: end)
+
+        XCTAssertTrue(series.isEmpty)
+        XCTAssertEqual(series.gaps.count, 1)
+        XCTAssertEqual(series.gaps.first?.start, end.addingTimeInterval(-QuotaHistoryRange.day.duration))
+        XCTAssertEqual(series.gaps.first?.end, end)
     }
 
     func testEmptyInputProducesAnEmptySeries() {

@@ -49,8 +49,17 @@ Some consequences worth knowing:
   stopped moving" distinguishable from "we stopped being able to look".
 - **A cached refresh records nothing.** When a refresh is served from cache, no new observation
   happened, so no new point is invented.
-- **Each account is its own history.** Providers with multiple accounts keep separate series, so
-  swapping accounts never mixes one account's usage into another's chart.
+- **`superusage --force` records too.** A refresh driven from the command line is a real observation, so
+  it lands in the same history the app writes. Without that, driving refreshes from the terminal would
+  punch holes in the chart for refreshes that actually succeeded.
+- **Each account is its own history.** Series are keyed by the account that produced them, not just by
+  the provider, so signing out and into a different account starts a fresh line instead of continuing the
+  previous account's. If the app can't tell which account a refresh belongs to, it records nothing for
+  that pass — a gap can be filled in later, but usage from two accounts merged into one line can't be
+  separated afterwards. superUsage reads which account is signed in where **once per launch** (the same
+  pass that decides which account cards exist at all), so if you swap accounts while it's running, quit
+  and reopen it — until you do, the whole app, history included, still attributes to the previous
+  account.
 - **Metrics without a limit never appear.** Daily spend, token counts, and the Usage Trend chart are
   unbounded, so there's no "remaining" to plot. They stay on the dashboard.
 - **History starts when you update.** The chart fills in from the first refresh after this version is
@@ -59,7 +68,9 @@ Some consequences worth knowing:
 ## Storage, retention, and privacy
 
 History lives in a local database at
-`~/Library/Application Support/<bundle id>/superUsageQuotaHistory.sqlite`.
+`~/Library/Application Support/superUsage/superUsageQuotaHistory.sqlite` — the same folder the app's
+other local caches use, so the menu-bar app and the `superusage` command-line tool read and write one
+shared history rather than two.
 
 - **Local only.** It is never written to iCloud and never sent anywhere. Unlike the current-values
   snapshot that [iCloud Sync](icloud-sync.md) can publish to your other Apple devices, quota history

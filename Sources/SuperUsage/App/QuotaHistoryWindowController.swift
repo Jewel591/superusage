@@ -16,6 +16,8 @@ final class QuotaHistoryWindowController: NSObject, NSWindowDelegate {
     private static let defaultSize = NSSize(width: 720, height: 500)
     /// Restores position and size across launches. AppKit keys this in `UserDefaults` for us.
     private static let frameAutosaveName = "superusage.quotaHistoryWindow"
+    /// Where AppKit persists an autosaved frame. Documented format: `NSWindow Frame <autosave name>`.
+    private static let frameDefaultsKey = "NSWindow Frame \(frameAutosaveName)"
 
     init(container: AppContainer) {
         self.container = container
@@ -41,9 +43,16 @@ final class QuotaHistoryWindowController: NSObject, NSWindowDelegate {
         // Without this the window is destroyed on close and the next open would use a freed object.
         // The controller decides the lifetime instead, in `windowWillClose`.
         window.isReleasedWhenClosed = false
+        // Setting the autosave name makes AppKit restore the saved frame immediately, so centring
+        // afterwards would throw that position away — the window would remember its size and never its
+        // place. Centre only on the first ever open. (`setFrameAutosaveName`'s own return value can't
+        // answer this: it reports whether the *name* was accepted, not whether a frame was restored.)
+        let hasSavedFrame = UserDefaults.standard.object(forKey: Self.frameDefaultsKey) != nil
         window.setFrameAutosaveName(Self.frameAutosaveName)
         window.delegate = self
-        window.center()
+        if !hasSavedFrame {
+            window.center()
+        }
         self.window = window
         activate(window)
     }

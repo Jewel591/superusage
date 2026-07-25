@@ -41,6 +41,7 @@ actor QuotaHistoryStore {
         static let entity = "QuotaSampleRecord"
         static let scopeKey = "scopeKey"
         static let providerID = "providerID"
+        static let accountDigest = "accountDigest"
         static let metricID = "metricID"
         static let capturedAt = "capturedAt"
         static let used = "used"
@@ -93,6 +94,9 @@ actor QuotaHistoryStore {
         guard loaded else { throw QuotaHistoryStoreError.storeNotLoaded }
         guard !samples.isEmpty else { return }
         let context = container.newBackgroundContext()
+        // Without a merge policy a uniqueness-constraint collision throws and loses the whole batch.
+        // The incoming row wins because a duplicate is by definition the same observation re-offered.
+        context.mergePolicy = NSMergePolicy(merge: .mergeByPropertyObjectTrumpMergePolicyType)
         try await context.perform {
             // One fetch bounded to the batch's own time span, rather than a query per sample: a batch is
             // one refresh pass, so its samples land within milliseconds of each other.
@@ -117,6 +121,7 @@ actor QuotaHistoryStore {
                 let record = NSEntityDescription.insertNewObject(forEntityName: Field.entity, into: context)
                 record.setValue(sample.scopeKey, forKey: Field.scopeKey)
                 record.setValue(sample.providerID, forKey: Field.providerID)
+                record.setValue(sample.accountDigest, forKey: Field.accountDigest)
                 record.setValue(sample.metricID, forKey: Field.metricID)
                 record.setValue(sample.capturedAt, forKey: Field.capturedAt)
                 record.setValue(sample.used, forKey: Field.used)
@@ -229,6 +234,7 @@ actor QuotaHistoryStore {
         return QuotaSample(
             scopeKey: scopeKey,
             providerID: providerID,
+            accountDigest: record.value(forKey: Field.accountDigest) as? String,
             metricID: metricID,
             capturedAt: capturedAt,
             used: used,
@@ -245,6 +251,7 @@ actor QuotaHistoryStore {
         entity.properties = [
             attribute(Field.scopeKey, .stringAttributeType),
             attribute(Field.providerID, .stringAttributeType),
+            attribute(Field.accountDigest, .stringAttributeType, optional: true),
             attribute(Field.metricID, .stringAttributeType),
             attribute(Field.capturedAt, .dateAttributeType),
             attribute(Field.used, .doubleAttributeType),
@@ -279,6 +286,11 @@ actor QuotaHistoryStore {
             ]
         )
         entity.indexes = [byScopeAndTime, byTime]
+        // A structural guarantee that one observation can only ever be one row. The in-context dedup in
+        // `record` covers a single writer; this covers the rest — two processes writing the same fetch
+        // (the app and the one-shot CLI), or a batch that races itself. Paired with a merge policy that
+        // keeps the incoming row, since a re-record of the same instant carries the same values.
+        entity.uniquenessConstraints = [[Field.scopeKey, Field.capturedAt]]
 
         let model = NSManagedObjectModel()
         model.entities = [entity]
@@ -297,14 +309,20 @@ actor QuotaHistoryStore {
         return attribute
     }
 
+    /// Where the history lives, resolved identically from every process that writes it.
+    ///
+    /// Deliberately a fixed directory rather than `Bundle.main.bundleIdentifier`: that names the
+    /// *running executable*, which is the app for the menu-bar process and something else for the
+    /// bundled `superusage` CLI — the two would end up with separate histories. This is the same
+    /// `superUsage/` directory the single-instance lock and the log-scan cache already share for
+    /// exactly that reason.
     private static func defaultStoreURL(name: String) -> URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
-        let owner = Bundle.main.bundleIdentifier ?? "superUsage"
         return applicationSupport
-            .appendingPathComponent(owner, isDirectory: true)
+            .appendingPathComponent("superUsage", isDirectory: true)
             .appendingPathComponent("\(name).sqlite", isDirectory: false)
     }
 }

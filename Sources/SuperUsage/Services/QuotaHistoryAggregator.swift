@@ -41,7 +41,9 @@ enum QuotaHistoryRange: String, CaseIterable, Identifiable, Sendable {
 
 /// One plotted point: a bucket of raw samples reduced to what the chart draws.
 struct QuotaHistoryPoint: Hashable, Sendable, Identifiable {
-    /// The bucket's start instant, which is also its x position.
+    /// When the closing observation of the bucket was taken — the point's x position. Deliberately the
+    /// real sample time rather than the bucket boundary, so a value is never drawn earlier than it
+    /// happened and a mid-bucket reset can't push its own aftermath to the left of the reset rule.
     let time: Date
     /// Remaining share of the window at the end of the bucket, `0...1`. The *last* observation in the
     /// bucket rather than an average, so the line reads as "what was left at that time".
@@ -72,6 +74,9 @@ struct QuotaHistorySeries: Hashable, Sendable {
     let scopeKey: String
     let range: QuotaHistoryRange
     let format: ProgressFormat
+    /// The span the chart covers: exactly the picked range, ending at the moment it was built. The x
+    /// axis is pinned to this rather than to the data, so a short or stale history reads as such.
+    let window: ClosedRange<Date>
     /// Line segments, split at reset boundaries and at gaps so neither is ever drawn as consumption.
     let segments: [QuotaHistorySegment]
     /// Instants where the quota window rolled over. Drawn as boundary rules, never as a usage spike.
@@ -87,6 +92,7 @@ struct QuotaHistorySeries: Hashable, Sendable {
         scopeKey: "",
         range: .day,
         format: .percent,
+        window: Date(timeIntervalSince1970: 0)...Date(timeIntervalSince1970: 1),
         segments: [],
         resets: [],
         gaps: []
@@ -126,17 +132,28 @@ enum QuotaHistoryAggregator {
         now: Date
     ) -> QuotaHistorySeries {
         let start = now.addingTimeInterval(-range.duration)
-        let windowed = samples
-            .filter { $0.capturedAt >= start && $0.capturedAt <= now }
+        let sorted = samples
+            .filter { $0.capturedAt <= now }
             .sorted { $0.capturedAt < $1.capturedAt }
+        let windowed = sorted.filter { $0.capturedAt >= start }
+        // The newest sample from *before* the window. Callers read one bucket extra precisely so this
+        // exists: without it, a reset or a multi-hour outage straddling the left edge is invisible — the
+        // series just appears to begin there, which reads as "this is where the data starts" rather than
+        // "the window had already rolled over" or "nothing was recorded for the first three hours".
+        let context = sorted.last { $0.capturedAt < start }
+
         guard let first = windowed.first else {
+            // Nothing in the window, but there may still be a reason: a series that stopped being
+            // recorded is one long gap, not an absence of history.
+            let trailing = context.map { [DateInterval(start: max($0.capturedAt, start), end: now)] } ?? []
             return QuotaHistorySeries(
                 scopeKey: samples.first?.scopeKey ?? "",
                 range: range,
                 format: samples.first?.format ?? .percent,
+                window: start...now,
                 segments: [],
                 resets: [],
-                gaps: []
+                gaps: trailing
             )
         }
 
@@ -144,6 +161,18 @@ enum QuotaHistoryAggregator {
         var current: [QuotaSample] = [first]
         var resets: [Date] = []
         var gaps: [DateInterval] = []
+
+        // Leading edge, judged against the out-of-window neighbour. The gap is clipped to the window so
+        // it describes the blank the user can actually see.
+        if let context {
+            let leadingGap = first.capturedAt.timeIntervalSince(context.capturedAt) > gapThreshold
+            if leadingGap, first.capturedAt > start {
+                gaps.append(DateInterval(start: start, end: first.capturedAt))
+            }
+            if didReset(from: context, to: first, acrossGap: leadingGap) {
+                resets.append(first.capturedAt)
+            }
+        }
 
         for (previous, sample) in zip(windowed, windowed.dropFirst()) {
             let isGap = sample.capturedAt.timeIntervalSince(previous.capturedAt) > gapThreshold
@@ -165,6 +194,12 @@ enum QuotaHistoryAggregator {
         }
         runs.append(current)
 
+        // Trailing edge: refreshes that stopped succeeding leave the line ending mid-chart. Without this
+        // the chart's last point looks current no matter how stale it is.
+        if let last = windowed.last, now.timeIntervalSince(last.capturedAt) > gapThreshold {
+            gaps.append(DateInterval(start: last.capturedAt, end: now))
+        }
+
         let segments = runs.enumerated().compactMap { index, run -> QuotaHistorySegment? in
             let points = bucketed(run, bucket: range.bucket)
             guard !points.isEmpty else { return nil }
@@ -175,6 +210,7 @@ enum QuotaHistoryAggregator {
             scopeKey: first.scopeKey,
             range: range,
             format: first.format,
+            window: start...now,
             segments: segments,
             resets: resets,
             gaps: gaps
@@ -211,20 +247,25 @@ enum QuotaHistoryAggregator {
     /// The closing value of each bucket becomes the point, so the line answers "what was left at that
     /// time" rather than smearing a mid-bucket average across a steep burn. `low`/`high` retain the
     /// spread the closing value drops.
+    ///
+    /// The point is stamped with the closing *sample's* own time, not the bucket's start. Stamping the
+    /// bucket start would misdate every value by up to a full bucket (a 14:55 reading shown at 14:00),
+    /// and worse: a reset mid-bucket puts the segments on either side in the same bucket, so the
+    /// post-reset point would be drawn to the left of the reset rule that caused it.
     private static func bucketed(_ samples: [QuotaSample], bucket: TimeInterval) -> [QuotaHistoryPoint] {
         var points: [QuotaHistoryPoint] = []
         var bucketStart: Date?
         var members: [QuotaSample] = []
 
         func flush() {
-            guard let start = bucketStart, let last = members.last else { return }
+            guard bucketStart != nil, let last = members.last else { return }
             let fractions = members.compactMap(\.remainingFraction)
             guard let closing = last.remainingFraction, let low = fractions.min(), let high = fractions.max() else {
                 return
             }
             points.append(
                 QuotaHistoryPoint(
-                    time: start,
+                    time: last.capturedAt,
                     remainingFraction: closing,
                     remainingValue: max(0, last.limit - last.used),
                     limit: last.limit,

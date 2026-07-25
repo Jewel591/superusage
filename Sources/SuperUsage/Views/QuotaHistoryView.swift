@@ -113,7 +113,10 @@ struct QuotaHistoryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let failure = container.quotaHistory.openFailure {
+        // The failure branch comes first, and covers reads as well as opening. A database that can't be
+        // read must not fall through to "No History Yet" — telling a user their history is empty when it
+        // is actually unreadable invites them to shrug at a real problem.
+        if let failure = container.quotaHistory.failure {
             message(
                 icon: "exclamationmark.triangle",
                 title: "History Unavailable",
@@ -207,12 +210,22 @@ struct QuotaHistoryView: View {
         }
     }
 
+    /// Reads the series for whatever the pickers currently say, discarding a result that arrives after
+    /// the user has moved on.
+    ///
+    /// Two callers race here: `task(id:)` on every picker change, and the reload loop on its own beat.
+    /// Without the key check, a slow 30d read that started before the user switched to 24h can land last
+    /// and leave the chart showing 30d under a "24h" selection until the next reload — the picker and
+    /// the chart silently disagreeing about what is on screen.
     private func loadSeries() async {
-        guard let selectedScopeKey else {
+        guard let requestedScopeKey = selectedScopeKey else {
             series = .empty
             return
         }
-        series = await container.quotaHistory.series(scopeKey: selectedScopeKey, range: range)
+        let requestedRange = range
+        let loaded = await container.quotaHistory.series(scopeKey: requestedScopeKey, range: requestedRange)
+        guard requestedScopeKey == selectedScopeKey, requestedRange == range else { return }
+        series = loaded
     }
 
     /// Re-reads on the refresh cadence for as long as the window is open. `task` cancels this when the

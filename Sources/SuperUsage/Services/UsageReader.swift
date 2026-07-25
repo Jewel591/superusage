@@ -115,6 +115,18 @@ public struct UsageReader {
                 // stamp — an unstamped claude/codex entry would be discarded at the app's next launch.
                 providerIdentityKeys: accountAssembly.identityKeysByCard
             )
+            // `superusage --force` produces genuinely new observations, so it records them too. Without
+            // this, a user who drives refreshes from the CLI would see holes in the trend for refreshes
+            // that actually succeeded — the chart would be describing which process asked, not what the
+            // quota did. Skipped under injected providers: tests have no real store to write to.
+            let quotaHistory: QuotaHistoryRecorder? = providersOverride == nil
+                ? QuotaHistoryRecorder(registry: registry, identityKeys: accountAssembly.identityKeysByCard)
+                : nil
+            if let quotaHistory {
+                dataStore.onQuotaSnapshotRecorded = { [weak quotaHistory] snapshot in
+                    quotaHistory?.record(snapshot: snapshot)
+                }
+            }
             if let matchedIDs {
                 for providerID in orderedIDs.filter(matchedIDs.contains) {
                     _ = await dataStore.refresh(providerID: providerID, force: force)
@@ -125,6 +137,9 @@ public struct UsageReader {
             if providersOverride == nil {
                 await PersistentJSONLScanCaches.flushPendingWrites()
             }
+            // The process exits as soon as this returns, so the fire-and-forget writes have to be waited
+            // out here or they never reach disk.
+            await quotaHistory?.flushPendingWrites()
             snapshots = dataStore.snapshots
             errors = dataStore.providerErrors
             warnings = orderedIDs

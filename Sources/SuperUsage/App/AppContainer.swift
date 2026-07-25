@@ -102,10 +102,18 @@ final class AppContainer {
         )
         // Quota history records straight off the refresh success path, so it is wired before the first
         // pass can run. It opens its database lazily on the first sample, keeping launch off the disk.
-        let quotaHistory = QuotaHistoryRecorder(registry: registry)
+        // The identity map is what keeps two accounts apart: card ids alone don't, because the account
+        // holding a family's default home keeps the bare `claude`/`codex` id across a sign-out.
+        let quotaHistory = QuotaHistoryRecorder(
+            registry: registry,
+            identityKeys: accountAssembly.identityKeysByCard
+        )
         dataStore.onQuotaSnapshotRecorded = { [weak quotaHistory] snapshot in
             quotaHistory?.record(snapshot: snapshot)
         }
+        // Retention runs on its own schedule rather than off the write path, so history still ages out
+        // for a user who has stopped producing samples entirely.
+        quotaHistory.startMaintenance()
         let syncIdentity = SyncDeviceIdentity()
         let appleDeviceSync = AppleDeviceSyncStore(dataStore: dataStore, deviceID: syncIdentity.id)
         if let warning = syncIdentity.persistenceWarning {

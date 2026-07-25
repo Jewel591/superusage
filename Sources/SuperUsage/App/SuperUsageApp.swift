@@ -83,14 +83,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// work being waited on could never run. The wait is bounded, so a wedged store delays the quit
     /// briefly instead of hanging it.
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let quotaHistory = container?.quotaHistory else { return .terminateNow }
+        guard let quotaHistory = container?.quotaHistory, quotaHistory.hasPendingWrites else {
+            return .terminateNow
+        }
         Task {
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { await quotaHistory.flushPendingWrites() }
-                group.addTask { try? await Task.sleep(for: .seconds(2)) }
-                await group.next()
-                group.cancelAll()
-            }
+            await quotaHistory.flushPendingWrites()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

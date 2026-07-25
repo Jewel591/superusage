@@ -47,9 +47,10 @@ the cache is read, so its computed aggregates and totals are not persisted in th
 
 superUsage also keeps a local record of your quota levels over time, so it can chart them — see
 [Usage History](quota-history.md). It lives in a database at
-`~/Library/Application Support/<bundle id>/superUsageQuotaHistory.sqlite`, holds only metric ids,
-timestamps, and the used/limit numbers already shown on the dashboard (no credentials, provider
-responses, or log contents), and is never sent to PostHog, a provider, or iCloud. Entries older than 35
+`~/Library/Application Support/superUsage/superUsageQuotaHistory.sqlite`, holds only metric ids,
+timestamps, the used/limit numbers already shown on the dashboard, and a short one-way digest of the
+account each row belongs to so two accounts' histories stay apart (no credentials, no account names, no
+provider responses, no log contents), and is never sent to PostHog, a provider, or iCloud. Entries older than 35
 days are deleted automatically.
 
 If you explicitly turn on [CloudKit Sync](icloud-sync.md), superUsage writes normalized provider
