@@ -259,6 +259,15 @@ struct QuotaHistoryView: View {
                 + "started with, so recording is paused and this account's history stays its own. It "
                 + "resumes when the original account signs back in — or right away if you quit and "
                 + "reopen superUsage."
+        // Deliberately claims nothing about *which* account, because nothing here knows: this is what a
+        // shared or ambiguous login looks like, not evidence of a swap. Sending the user to sign the
+        // "original" account back in would be advice for a problem they don't have.
+        case .unproven:
+            return "\(name) is refreshing fine, but those refreshes can't show which account they belong "
+                + "to, so they aren't recorded. That's what a login shared with Claude Desktop, one "
+                + "passed in through the environment, or a home holding more than one saved login looks "
+                + "like. Signing in with its CLI, so this card reads one login of its own, starts the "
+                + "recording."
         }
     }
 

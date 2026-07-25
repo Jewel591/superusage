@@ -128,11 +128,15 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.pausedCards, ["claude"])
     }
 
-    /// A snapshot whose credential can't name its account is treated exactly like one from a different
-    /// account. This is the Claude Desktop / ambient-token case: those logins are not bound to this
-    /// card's home, so "we couldn't tell" is what the provider reports — and it is not permission to
-    /// write a row that can never be un-written.
-    func testSnapshotThatCannotProveItsAccountAlsoPausesRecording() async throws {
+    /// A snapshot whose credential can't name its account is refused exactly as firmly as one from a
+    /// different account. This is the Claude Desktop / ambient-token / two-logins-in-one-home case:
+    /// "we couldn't tell" is what the provider reports, and it is not permission to write a row that can
+    /// never be un-written.
+    ///
+    /// It is *reported* differently, though. "A different account is refreshing" is a claim about the
+    /// user's machine, and there is no evidence for it here — so it gets its own reason, and the window
+    /// doesn't send someone chasing a sign-out that never happened.
+    func testSnapshotThatCannotProveItsAccountPausesUnderItsOwnReason() async throws {
         let recorder = makeRecorder(identityKeys: ["claude": "account-a"])
 
         recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: nil))
@@ -141,6 +145,16 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         let count = try await store.sampleCount()
         XCTAssertEqual(count, 0)
         XCTAssertEqual(recorder.pausedCards, ["claude"])
+        XCTAssertEqual(recorder.recordingGaps.map(\.reason), [.unproven])
+
+        // And a later refresh that *does* name another account is the other claim, so it re-reports.
+        recorder.record(snapshot: snapshot(
+            used: 41,
+            at: capturedAt.addingTimeInterval(300),
+            accountProof: "account-b"
+        ))
+        _ = await recorder.flushPendingWrites()
+        XCTAssertEqual(recorder.recordingGaps.map(\.reason), [.mismatched])
     }
 
     /// The check must be invisible in the normal case — the credential that fetched belongs to the

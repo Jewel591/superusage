@@ -925,6 +925,114 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertNil(snapshot.accountProof)
     }
 
+    /// The reachable cross-account splice that "the credential came from my home" does not catch, and
+    /// the reason attribution now needs the home to hold exactly one login in the running.
+    ///
+    /// This is a **supported** state, not a corrupt one: `orderedStoredCandidates` reads keychain *and*
+    /// file and prefers the keychain precisely because a re-login can land in either and leave the other
+    /// behind (#687). So the home can name account B in `.claude.json`, hold B's fresh login in the file,
+    /// and still hold A's leftover — but not yet expired — token in the keychain. Keychain-first wins, A's
+    /// numbers come back, and every other check passes: the source *is* bound to this home, and the home
+    /// names the same account before and after the request because nothing about it changed. Stamping
+    /// this with B would weld A's usage into B's series permanently.
+    func testTwoLiveLoginsInOneHomeMakeTheReadingUnattributable() async {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let keychainAccountA = #"{"claudeAiOauth":{"accessToken":"token-A","refreshToken":"refresh-A","subscriptionType":"pro","scopes":["user:profile"]}}"#
+        // A's token is still accepted, so the fallback to the file never happens.
+        let http = FakeHTTPClient(response: HTTPResponse(
+            statusCode: 200,
+            headers: [:],
+            body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+        ))
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+                files: FakeFiles([
+                    // The fresh login for B, left in the file by an external `claude` re-login…
+                    "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token-B","refreshToken":"refresh-B","subscriptionType":"pro","scopes":["user:profile"]}}"#,
+                    // …while the home names B.
+                    "/tmp/claude/.claude.json": #"{"oauthAccount":{"accountUuid":"ACCT-B","organizationUuid":"ORG-B"}}"#
+                ]),
+                // …and A's leftover token still sits in this home's keychain item, which is probed first.
+                keychain: FakeKeychain(keychainAccountA),
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: http),
+            logUsageScanner: ClaudeLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        // Pinned rather than assumed: the numbers on this snapshot are A's, fetched with A's token,
+        // while the home this card reads names B. That is the whole hazard in one assertion.
+        XCTAssertTrue(
+            http.requests.contains { $0.headers.values.contains { $0.contains("token-A") } },
+            "keychain-first means A's leftover token is what actually fetched"
+        )
+        XCTAssertNil(
+            snapshot.accountProof,
+            "two live logins in one home: the numbers may be either account's, so neither may be claimed"
+        )
+    }
+
+    /// The ambiguity gate must not swallow the case it shares a shape with. Once the endpoint has
+    /// *rejected* the leftover login, it is out of the running, and the survivor is this home's only
+    /// working login — which is the ordinary "stale source, fresh re-login elsewhere" recovery the
+    /// fallback chain exists for. Refusing attribution here would cost history for a completely normal
+    /// re-login.
+    func testALoginTheEndpointRejectedNoLongerCompetesForAttribution() {
+        let store = ClaudeAuthStore(
+            environment: FakeEnvironment([:]),
+            files: FakeFiles([:]),
+            keychain: FakeKeychain()
+        )
+        let stale = ClaudeCredentialState(
+            oauth: ClaudeOAuth(accessToken: "token-A", refreshToken: "refresh-A"),
+            source: .keychainCurrentUser(service: store.keychainServiceCandidates()[0]),
+            fullData: nil,
+            inferenceOnly: false
+        )
+        let fresh = ClaudeCredentialState(
+            oauth: ClaudeOAuth(accessToken: "token-B", refreshToken: "refresh-B"),
+            source: .file,
+            fullData: nil,
+            inferenceOnly: false
+        )
+
+        XCTAssertTrue(
+            ClaudeProvider.attributionIsAmbiguous(
+                winner: fresh, among: [stale, fresh], eliminated: [],
+                isBoundToThisHome: { store.isBoundToThisHome($0) }
+            ),
+            "while both are live, either could be the account the home names"
+        )
+        XCTAssertFalse(
+            ClaudeProvider.attributionIsAmbiguous(
+                winner: fresh,
+                among: [stale, fresh],
+                eliminated: [ClaudeProvider.loginFingerprint(stale.oauth)],
+                isBoundToThisHome: { store.isBoundToThisHome($0) }
+            ),
+            "once the stale login is rejected, the survivor is the home's only working login"
+        )
+        // The same login saved in both stores is one login, not two — compared by refresh token, so an
+        // access-token rotation in one of them doesn't make a card look ambiguous to itself.
+        let sameLoginRotated = ClaudeCredentialState(
+            oauth: ClaudeOAuth(accessToken: "token-B-rotated", refreshToken: "refresh-B"),
+            source: .keychainCurrentUser(service: store.keychainServiceCandidates()[0]),
+            fullData: nil,
+            inferenceOnly: false
+        )
+        XCTAssertFalse(
+            ClaudeProvider.attributionIsAmbiguous(
+                winner: fresh, among: [sameLoginRotated, fresh], eliminated: [],
+                isBoundToThisHome: { store.isBoundToThisHome($0) }
+            )
+        )
+    }
+
     /// Stands in for a `claude` re-login landing while a refresh is in flight: rewrites the home's
     /// identity file at the exact moment the usage request goes out.
     private final class ReloginDuringRequest: HTTPClient, @unchecked Sendable {

@@ -85,6 +85,14 @@ Some consequences worth knowing:
   card's own home is what makes it recordable. A sign-in that lands while a refresh is already in the air
   is dropped too, rather than filed under whoever arrived mid-flight.
 
+  One more, and it's the subtlest: a Claude home can end up holding **two** saved logins, because a
+  re-login writes to the keychain or to `~/.claude/.credentials.json` depending on version and can leave
+  the other behind. superUsage reads the keychain first, so if that leftover still works, the numbers
+  that come back are its account's while the home names the newer one. Nothing about the home looks wrong
+  in that state, which is exactly why it isn't guessed at: while two working logins sit in one home,
+  refreshes are recorded for neither. Once one of them stops being accepted — the normal end of a
+  leftover login — the survivor is the home's only login again and recording resumes on its own.
+
   A card that has no account at all — a Codex login held in the keychain is the usual way this happens —
   records nothing, and since it never records, it never appears in the picker either. The window names it
   in a notice instead, because that is a silence waiting will not fix.

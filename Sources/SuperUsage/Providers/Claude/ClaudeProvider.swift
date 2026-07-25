@@ -179,6 +179,9 @@ final class ClaudeProvider: ProviderRuntime {
         // request/transport failure) surfaces immediately so a real outage is never masked as a retry.
         var lastFallbackError: ClaudeAuthError?
         var credentialGeneration = ClaudeCredentialGeneration(storedCandidates)
+        // Logins this refresh has *ruled out* — each one the endpoint rejected as unauthenticated. They
+        // stop competing for the attribution of whatever succeeds afterwards; see `attributionIsAmbiguous`.
+        var eliminatedLogins: Set<Data> = []
         for state in candidates {
             // The environment token cannot read subscription usage. If a CLI login was rejected, try
             // Desktop before this spend-only fallback can turn the refresh into a false success.
@@ -198,7 +201,13 @@ final class ClaudeProvider: ProviderRuntime {
                     state: state,
                     credentialGeneration: &credentialGeneration,
                     fallbackWarning: desktopFallbackWarning,
-                    homeAccount: homeAccount
+                    homeAccount: homeAccount,
+                    attributionIsAmbiguous: Self.attributionIsAmbiguous(
+                        winner: state,
+                        among: candidates,
+                        eliminated: eliminatedLogins,
+                        isBoundToThisHome: { [authStore] in authStore.isBoundToThisHome($0) }
+                    )
                 )
                 AppLog.info(LogTag.plugin("claude"), "refresh end (\(Int(Date().timeIntervalSince(start) * 1000))ms)")
                 return snapshot
@@ -212,6 +221,7 @@ final class ClaudeProvider: ProviderRuntime {
             } catch let error as ClaudeAuthError where error.allowsAuthFallback {
                 AppLog.warn(LogTag.auth("claude"), "\(state.source.label) failed (\(error)); falling back to next source if any")
                 lastFallbackError = error
+                eliminatedLogins.insert(Self.loginFingerprint(state.oauth))
                 continue
             } catch {
                 return ProviderSnapshot.error(provider: provider, error: error)
@@ -234,11 +244,55 @@ final class ClaudeProvider: ProviderRuntime {
         )
     }
 
+    /// Whether more than one distinct login in this card's own home could have produced these numbers.
+    ///
+    /// This is the hole that "the credential came from my home" leaves open, and it is a **supported**
+    /// state rather than a corrupt one: the loader deliberately reads keychain *and* file and prefers the
+    /// keychain, because a re-login can land in either one and leave the other behind (see
+    /// `orderedStoredCandidates`, issue #687). So a home can hold a live login for account B in the file
+    /// and a leftover — still-valid — token for account A in the keychain, with `.claude.json` naming B.
+    /// The keychain wins, A's numbers come back, and nothing about the home has changed before, during, or
+    /// after the request. Both the identity re-read and `credentialsChanged` see a perfectly stable home,
+    /// because it *is* stable; what's unknown is which of its two logins belongs to the account it names.
+    ///
+    /// So attribution is refused whenever a second bound login is still in the running. A login the
+    /// endpoint has already rejected this refresh is not — that is the ordinary "stale source, fresh
+    /// re-login elsewhere" recovery, and once the stale one is out, the survivor is the home's only
+    /// working login. The cost is samples lost while two live logins sit in one home; the alternative is
+    /// one account's usage welded into another's series, which no later refresh can take back.
+    ///
+    /// Logins are compared by refresh token (falling back to the access token), so the same login copied
+    /// into both stores — or rotated in one of them — is correctly seen as one login, not two.
+    static func attributionIsAmbiguous(
+        winner: ClaudeCredentialState,
+        among candidates: [ClaudeCredentialState],
+        eliminated: Set<Data>,
+        isBoundToThisHome: (ClaudeCredentialState.Source) -> Bool
+    ) -> Bool {
+        // An unbound winner (Desktop, ambient token) has no proof to lose — `provenAccount` already
+        // refuses it, and the other candidates say nothing about a credential that isn't from this home.
+        guard isBoundToThisHome(winner.source) else { return false }
+        let winnerLogin = loginFingerprint(winner.oauth)
+        return candidates.contains { other in
+            guard isBoundToThisHome(other.source) else { return false }
+            let login = loginFingerprint(other.oauth)
+            return login != winnerLogin && !eliminated.contains(login)
+        }
+    }
+
+    /// Identifies a *login* rather than a credential snapshot: the refresh token survives access-token
+    /// rotation, so one login saved in two places (or refreshed in one of them) still reads as one login.
+    static func loginFingerprint(_ oauth: ClaudeOAuth) -> Data {
+        let material = oauth.refreshToken?.nilIfEmpty ?? oauth.accessToken ?? ""
+        return Data(SHA256.hash(data: Data(material.utf8)))
+    }
+
     private func probe(
         state initialState: ClaudeCredentialState,
         credentialGeneration: inout ClaudeCredentialGeneration,
         fallbackWarning: String?,
-        homeAccount: String?
+        homeAccount: String?,
+        attributionIsAmbiguous: Bool
     ) async throws -> ProviderSnapshot {
         var state = initialState
         var mapped = ClaudeMappedUsage(
@@ -304,7 +358,9 @@ final class ClaudeProvider: ProviderRuntime {
         }
 
         MetricLine.appendNoDataIfNeeded(&mapped.lines)
-        let accountProof = await provenAccount(for: state.source, pinnedTo: homeAccount)
+        let accountProof = attributionIsAmbiguous
+            ? nil
+            : await provenAccount(for: state.source, pinnedTo: homeAccount)
         return ProviderSnapshot.make(
             provider: provider,
             plan: mapped.plan,
@@ -326,7 +382,8 @@ final class ClaudeProvider: ProviderRuntime {
     ///
     /// 1. The credential provably came from this card's own home — `isBoundToThisHome`, which excludes
     ///    Claude Desktop's system-wide login, an ambient `CLAUDE_CODE_OAUTH_TOKEN`, and the bare-default
-    ///    keychain item a `CLAUDE_CONFIG_DIR` store falls back to.
+    ///    keychain item a `CLAUDE_CONFIG_DIR` store falls back to — and it was the home's only login
+    ///    still in the running (`attributionIsAmbiguous`, checked by the caller).
     /// 2. The home still names the same account **after** the fetch as it did before it. The identity is
     ///    read up front, next to the credentials (a later-only read would describe whoever signed in
     ///    while the request was in flight); re-reading it here pins the pair across the whole request, so

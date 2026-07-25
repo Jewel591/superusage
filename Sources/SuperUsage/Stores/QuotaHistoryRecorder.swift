@@ -25,10 +25,13 @@ final class QuotaHistoryRecorder {
     /// doesn't prove belongs to this account; see `isProven`.
     private let identityKeys: [String: String]
 
-    /// Cards whose refreshes are currently coming back from a different account than the one this
-    /// process launched with. Recording is suspended for these, and the history window says so —
-    /// otherwise the chart would just stop growing with no stated reason.
-    private(set) var pausedCards: Set<String> = []
+    /// Cards whose recording is currently suspended, and which of the two reasons applies. Kept apart
+    /// because only one of them is a statement about accounts; see `isProven`.
+    private(set) var pausedReasons: [String: QuotaHistoryRecordingGap.Reason] = [:]
+
+    /// Cards not being recorded right now. The history window says so — otherwise the chart would just
+    /// stop growing with no stated reason.
+    var pausedCards: Set<String> { Set(pausedReasons.keys) }
 
     /// Cards that produced recordable numbers but that this process never resolved an account for, so
     /// nothing they report can be keyed and nothing is written for them all session.
@@ -177,26 +180,37 @@ final class QuotaHistoryRecorder {
     private func isProven(_ snapshot: ProviderSnapshot) -> Bool {
         let cardID = snapshot.providerID
         guard ProviderAccountID.families.contains(ProviderAccountID.family(of: cardID)) else { return true }
-        guard let launchIdentity = identityKeys[cardID], snapshot.accountProof == launchIdentity else {
-            // Logged once per card rather than once per refresh: a swapped account stays swapped, and a
-            // warning every 5 minutes for days would bury everything else in the log.
-            if pausedCards.insert(cardID).inserted {
-                AppLog.warn(
-                    .history,
-                    "\(cardID): this refresh came from a different account than the one superUsage "
-                        + "launched with (or from a credential that can't name its account); "
-                        + "history paused for this card"
-                )
-            }
+        guard let launchIdentity = identityKeys[cardID] else { return false }
+
+        // The two ways a write is refused are told apart, because they are different facts about the
+        // user's machine and only one of them is about accounts at all. "This refresh named account B
+        // while the app is keyed to A" is evidence of a swap. "This refresh named nobody" is not — it is
+        // what a Claude Desktop login, an ambient environment token, or a home holding two live logins
+        // looks like, and telling that user their refreshes are coming from a different account would be
+        // a claim we can't support, followed by advice (sign the original account back in) that fixes
+        // nothing. See `QuotaHistoryRecordingGap.Reason`.
+        guard let proof = snapshot.accountProof else {
+            note(cardID, .unproven, "this refresh could not name the account behind its credential")
             return false
         }
-        // Recording resumes on its own if the proven account comes back — signing out and back in, or a
-        // Desktop-backed pass followed by a normal one. Nothing is at risk in resuming: every single
-        // write is checked against this same proof, so a resumed card is writing rows it has proven.
-        if pausedCards.remove(cardID) != nil {
+        guard proof == launchIdentity else {
+            note(cardID, .mismatched, "this refresh came from a different account than the launch one")
+            return false
+        }
+        // Recording resumes on its own once refreshes are provable and match again — signing out and back
+        // in, or a Desktop-backed pass followed by a normal one. Nothing is at risk in resuming: every
+        // single write is checked against this same proof, so a resumed card writes only proven rows.
+        if pausedReasons.removeValue(forKey: cardID) != nil {
             AppLog.info(.history, "\(cardID): refreshes are the launch account's again; history resumed")
         }
         return true
+    }
+
+    /// Records why a card is suspended, logging once per *reason* rather than once per refresh — a
+    /// swapped account stays swapped, and a warning every 5 minutes for days buries everything else.
+    private func note(_ cardID: String, _ reason: QuotaHistoryRecordingGap.Reason, _ detail: String) {
+        guard pausedReasons.updateValue(reason, forKey: cardID) != reason else { return }
+        AppLog.warn(.history, "\(cardID): \(detail); history paused for this card")
     }
 
     /// Every card that has refreshed successfully and recorded nothing anyway, and why.
@@ -206,14 +220,14 @@ final class QuotaHistoryRecorder {
     ///
     /// - `.unattributable` — no account was resolved for the card this launch, so nothing it reports can
     ///   be keyed. Lasts the whole session; waiting does not fix it. See `noteIfUnattributable`.
-    /// - `.mismatched` — the card did resolve, but its refreshes are now coming back from a different
-    ///   account (see `isProven`). Suspended, and resumes by itself when they match again.
+    /// - `.mismatched` / `.unproven` — the card did resolve, but its refreshes either name a different
+    ///   account or name none at all (see `isProven`). Suspended, and resumes by itself.
     ///
-    /// The two sets are disjoint by construction: a card only reaches the proof check once its identity
+    /// The sets are disjoint by construction: a card only reaches the proof check once its identity
     /// resolved. Ordered by card id so the notices don't reshuffle between renders.
     var recordingGaps: [QuotaHistoryRecordingGap] {
         let byReason = unattributableCards.map { ($0, QuotaHistoryRecordingGap.Reason.unattributable) }
-            + pausedCards.map { ($0, QuotaHistoryRecordingGap.Reason.mismatched) }
+            + pausedReasons.map { ($0.key, $0.value) }
         return byReason
             .sorted { $0.0 < $1.0 }
             .compactMap { cardID, reason in
@@ -366,8 +380,14 @@ struct QuotaHistoryRecordingGap: Hashable, Sendable, Identifiable {
     enum Reason: Hashable, Sendable {
         /// No account was resolved for this card at launch, so nothing it reports can be keyed.
         case unattributable
-        /// Refreshes are coming back from a different account than the one this process launched with.
+        /// Refreshes name a different account than the one this process launched with.
         case mismatched
+        /// Refreshes succeed but can't name the account behind the credential that fetched them — a
+        /// login shared with Claude Desktop, one supplied through the environment, or a home holding
+        /// more than one live login. Deliberately *not* folded into `mismatched`: there is no evidence
+        /// of a different account here, and saying there is would send the user after a swap that never
+        /// happened.
+        case unproven
     }
 
     let provider: Provider
@@ -381,7 +401,7 @@ extension QuotaHistoryRecordingGap.Reason {
     /// glance, since only one of them is worth acting on.
     var icon: String {
         switch self {
-        case .unattributable: "person.crop.circle.badge.questionmark"
+        case .unattributable, .unproven: "person.crop.circle.badge.questionmark"
         case .mismatched: "pause.circle"
         }
     }
