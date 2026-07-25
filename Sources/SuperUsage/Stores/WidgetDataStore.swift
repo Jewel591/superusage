@@ -91,6 +91,14 @@ final class WidgetDataStore {
     @ObservationIgnored var onRefreshOutcome: (@MainActor (String, RefreshOutcome, ErrorCategory?, Bool) -> Void)?
     /// Optional legacy hook for the dormant iCloud Documents history implementation.
     @ObservationIgnored var onLocalHistoryChanged: (@MainActor () -> Void)?
+    /// Wired by `AppContainer` to `QuotaHistoryRecorder`; receives every snapshot that came from a real,
+    /// successful fetch so its capped metrics can be appended to the local quota-history database.
+    ///
+    /// Deliberately fired only on the `.refreshed` path — not on a cache hit, and never on a failure.
+    /// A cache hit re-serves the same `refreshedAt` and would record a duplicate observation; a failure
+    /// has to leave a gap in the series rather than a repeat of the last good value, which is what makes
+    /// "the quota stopped moving" distinguishable from "we stopped being able to look".
+    @ObservationIgnored var onQuotaSnapshotRecorded: (@MainActor (ProviderSnapshot) -> Void)?
     /// Wired by `AppleDeviceSyncStore`; publishes normalized last-good snapshots to read-only Apple clients.
     @ObservationIgnored var onAppleDeviceSnapshotChanged: (@MainActor () -> Void)?
     @ObservationIgnored private var peerHistoryDocuments: [UsageHistoryDocument] = []
@@ -355,6 +363,10 @@ final class WidgetDataStore {
         // non-account providers and for cards whose identity didn't resolve this launch.
         cache.store(snapshot, producedByIdentityKey: providerIdentityKeys[providerID])
         rebuildRenderedSnapshots()
+        // Append this observation to the quota-history log. Unconditional (unlike the two hooks below,
+        // which the batch path defers so it can fire them once per pass): every successful fetch is one
+        // point on the trend, so a batch of ten providers must contribute ten sets of samples, not one.
+        onQuotaSnapshotRecorded?(snapshot)
         if notifyHistoryChange {
             onLocalHistoryChanged?()
             onAppleDeviceSnapshotChanged?()

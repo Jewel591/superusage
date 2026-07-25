@@ -66,6 +66,11 @@ The UI reads from a few observable stores:
 - `ProviderEnablementStore` — which providers the user has turned on or off.
 - `ICloudUsageSyncStore` — one coordinated, atomic history file per Mac, iCloud metadata notifications,
   and the visible device/error state. File access is injected for lifecycle and failure tests.
+- `QuotaHistoryRecorder` — the quota trend log. It hangs off `WidgetDataStore`'s success path (one
+  closure, like telemetry's) and appends a sample per capped metric to a **local-only** Core Data store,
+  `QuotaHistoryStore`. Writes are fire-and-forget so a database problem can never fail a refresh, and
+  reads go through `QuotaHistoryAggregator`, which does all the bucketing, gap, and reset detection as
+  pure functions. See [Usage History](quota-history.md).
 
 Refresh runs on a timer in `AppContainer`; each pass respects the cache, so the network is only hit once a
 snapshot has actually expired.

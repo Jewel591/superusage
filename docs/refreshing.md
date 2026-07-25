@@ -10,6 +10,10 @@
 - With [iCloud Sync](icloud-sync.md) on, a refresh batch writes one machine-history file after the whole
   batch finishes. Manual provider refreshes write after that provider finishes, and adjacent changes are
   debounced into one write.
+- Every successful refresh also records one point per metric that has a limit into the local
+  [Usage History](quota-history.md) database, which is what the trend charts are drawn from. A refresh
+  served from cache records nothing (no new observation happened), and a failed one records nothing
+  either — that's what leaves an honest gap in the trend instead of repeating the last good value.
 
 ## Caching
 

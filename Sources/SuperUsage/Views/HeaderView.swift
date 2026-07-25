@@ -29,6 +29,9 @@ struct HeaderView: View {
     @Environment(UpdaterController.self) private var updater
     @Environment(PopoverTransparencyStore.self) private var transparency
     @Environment(\.colorScheme) private var colorScheme
+    /// Opens the standalone Usage History window. Absent in previews and share-card renders, where the
+    /// item simply doesn't appear rather than offering an action with nothing behind it.
+    @Environment(\.openQuotaHistory) private var openQuotaHistory
     /// The current screen. The footer is fixed chrome keyed off `layout.screen` (it no longer slides
     /// per-page), so this control shows only when that's `.dashboard` and swaps in place on a switch.
     let screen: PopoverScreen
@@ -97,6 +100,12 @@ struct HeaderView: View {
         .keyboardShortcut(",")
 
         Divider()
+
+        if let openQuotaHistory {
+            Button { openQuotaHistory() } label: {
+                Label("Usage History…", systemImage: "chart.xyaxis.line")
+            }
+        }
 
         shareScreenshotMenu
 

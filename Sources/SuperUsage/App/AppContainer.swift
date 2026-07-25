@@ -11,6 +11,9 @@ final class AppContainer {
     let dataStore: WidgetDataStore
     /// Opt-in full normalized snapshot publisher for read-only iPhone, iPad, and Watch clients.
     let appleDeviceSync: AppleDeviceSyncStore
+    /// Local quota-history database: one sample per capped metric per successful refresh, feeding the
+    /// Usage History window's trend charts. Local-only — never published to iCloud.
+    let quotaHistory: QuotaHistoryRecorder
     /// Single source of truth for which providers the user has turned off. Both stores consult it (via
     /// injected closures) and the Customize provider list drives it.
     let enablement: ProviderEnablementStore
@@ -97,6 +100,12 @@ final class AppContainer {
             providerIdentityKeys: accountAssembly.identityKeysByCard,
             resolveDisplayName: { [accounts] in accounts.resolvedDisplayName(cardID: $0) }
         )
+        // Quota history records straight off the refresh success path, so it is wired before the first
+        // pass can run. It opens its database lazily on the first sample, keeping launch off the disk.
+        let quotaHistory = QuotaHistoryRecorder(registry: registry)
+        dataStore.onQuotaSnapshotRecorded = { [weak quotaHistory] snapshot in
+            quotaHistory?.record(snapshot: snapshot)
+        }
         let syncIdentity = SyncDeviceIdentity()
         let appleDeviceSync = AppleDeviceSyncStore(dataStore: dataStore, deviceID: syncIdentity.id)
         if let warning = syncIdentity.persistenceWarning {
@@ -133,6 +142,7 @@ final class AppContainer {
         self.layout = layout
         self.dataStore = dataStore
         self.appleDeviceSync = appleDeviceSync
+        self.quotaHistory = quotaHistory
 
         // The resets popover's claim service, sharing the Codex provider's credential loading and HTTP
         // client so the claim's auth can't drift from the provider's. A successful claim forces a Codex

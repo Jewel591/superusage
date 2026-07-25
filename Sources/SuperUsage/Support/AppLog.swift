@@ -17,6 +17,8 @@ enum LogTag: String, Sendable {
     case subprocess
     case lifecycle
     case notifications
+    /// The local quota-history database: sample writes, range reads, and retention pruning.
+    case history
 
     /// Compound `[plugin:<id>]` / `[auth:<id>]` tags for per-provider lines.
     static func plugin(_ id: String) -> String { "plugin:\(id)" }
