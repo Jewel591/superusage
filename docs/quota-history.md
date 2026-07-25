@@ -93,8 +93,14 @@ Some consequences worth knowing:
   refreshes are recorded for neither, and the window says so. Age isn't used to pick a winner — an old
   token is not the same thing as another account's, and superUsage has no way to tell which of the two
   the home's name belongs to. Once one of them is actually rejected — the normal end of a leftover login
-  — the survivor is the home's only login and recording resumes on its own. Deleting the one you don't
-  use (`~/.claude/.credentials.json`, if you sign in with the CLI) resolves it immediately.
+  — the survivor is the home's only login and recording resumes on its own.
+
+  What you won't find here is which file or keychain item to delete, and that omission is deliberate: the
+  same reason superUsage won't guess is the reason it can't advise. Either store can hold the current
+  login — that's why both are read — so any "just delete this one" would be a coin flip, and deleting the
+  *current* login rather than the leftover would leave the remaining account's numbers looking like this
+  home's own, unpaused and unremarkable. That is the exact outcome this rule exists to prevent, so the
+  advice that could cause it isn't given.
 
   A card that has no account at all — a Codex login held in the keychain is the usual way this happens —
   records nothing, and since it never records, it never appears in the picker either. The window names it
