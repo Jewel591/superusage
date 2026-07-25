@@ -19,11 +19,13 @@ set -euo pipefail
 # stamped in-house and a required check would wall off outside
 # contributions before a maintainer ever looked at them.
 #
-# Every context listed below must be a job that already runs on `main`. A
-# required check that nothing emits doesn't fail the merge — it hangs it,
-# waiting forever for a status that isn't coming. Adding a CI job and
-# requiring it are therefore two separate steps, in that order, with the
-# job merged in between.
+# Every context listed below must be a job that already runs on `main`
+# *and* reports on every PR targeting `main` — no `paths`/`paths-ignore`
+# or other workflow-level filter that can skip it. A required check that
+# nothing emits doesn't fail the merge; it hangs it, waiting forever for a
+# status that isn't coming, and a filtered job produces exactly that on
+# the PRs it skips. Adding a CI job and requiring it are therefore two
+# separate steps, in that order, with the job merged in between.
 #
 # Running this makes AGENTS.md's "none of this is enforced by GitHub" no
 # longer true of the CI checks. Update that line if you run it.
