@@ -22,25 +22,6 @@ struct ClaudeCredentialState: Hashable, Sendable {
         case desktop
         case environment
 
-        /// Whether a credential from this source belongs, by construction, to the Claude home the store
-        /// that loaded it is scoped to.
-        ///
-        /// The three stored sources do: a `.configDir` store reads only its own directory and its own
-        /// hashed keychain item, a `.standard` store only the default home's. The other two do not —
-        /// Claude Desktop's is one system-wide login that "could belong to any of them" (see
-        /// `allowsDesktopFallback`), and `CLAUDE_CODE_OAUTH_TOKEN` is whatever the launch environment
-        /// happened to export.
-        ///
-        /// A Claude OAuth token carries no account claim, so this is the only thing that can tie a
-        /// snapshot back to an account — which is what quota history requires before it will write an
-        /// append-only row. See `ProviderSnapshot.accountProof`.
-        var isBoundToItsHome: Bool {
-            switch self {
-            case .file, .keychainCurrentUser, .keychainLegacy: true
-            case .desktop, .environment: false
-            }
-        }
-
         /// Log-safe source kind — NEVER the keychain service name or any token.
         var label: String {
             switch self {
@@ -275,9 +256,8 @@ struct ClaudeAuthStore: Sendable {
     /// What it can do is say which home it came from: a `.configDir` card reads only its own directory
     /// and its own keychain item, and a `.standard` card reads only the default home's. So a stored
     /// candidate winning the probe *is* evidence about this home, and this names the account that home
-    /// is logged into. Sources that aren't bound to a home — Claude Desktop's login and an ambient
-    /// `CLAUDE_CODE_OAUTH_TOKEN` — prove nothing about it; excluding those is the caller's job, via
-    /// `ClaudeCredentialState.Source.isBoundToItsHome`, not this method's.
+    /// is logged into. Sources that aren't bound to *this* home prove nothing about it; excluding those
+    /// is the caller's job, via `isBoundToThisHome(_:)`, not this method's.
     ///
     /// Touches the disk, so callers run it off the main actor along with the credential load.
     func homeAccountIdentityKey() -> String? {
@@ -293,6 +273,34 @@ struct ClaudeAuthStore: Sendable {
         }
         guard case .resolved(let identityKey, _, _) = outcome else { return nil }
         return identityKey
+    }
+
+    /// Whether a credential that won the probe from `source` provably came out of **this store's own**
+    /// Claude home — the home `homeAccountIdentityKey()` names the account for. Only when both agree may
+    /// a snapshot be attributed to that account (`ProviderSnapshot.accountProof`).
+    ///
+    /// `.file` is bound by construction: `credentialsPath()` is this home's directory and nothing else.
+    ///
+    /// The keychain is bound only for **this home's own service name**, which is the *first* candidate
+    /// and never the rest. That distinction is the whole point of this method: a `.standard` store under
+    /// a `CLAUDE_CONFIG_DIR` override probes `["<base>-<hash(dir)>", "<base>"]`, so when the override's
+    /// own item is missing it falls back to the *bare default* item — a different home's login, which
+    /// keeps working (that fallback is deliberate, and predates history) but must never be stamped with
+    /// the override home's account. This is not a race: it is a stable state for anyone who exports
+    /// `CLAUDE_CONFIG_DIR` without having logged in under it.
+    ///
+    /// `.desktop` and `.environment` are bound to no home at all — Claude Desktop's is one system-wide
+    /// login shared by every Claude card (see `allowsDesktopFallback`), and `CLAUDE_CODE_OAUTH_TOKEN` is
+    /// whatever the launch environment happened to export.
+    func isBoundToThisHome(_ source: ClaudeCredentialState.Source) -> Bool {
+        switch source {
+        case .file:
+            return true
+        case .keychainCurrentUser(let service), .keychainLegacy(let service):
+            return service == keychainServiceCandidates().first
+        case .desktop, .environment:
+            return false
+        }
     }
 
     /// Whether this scoped card's login leaves any local footprint, checked without ever reading a

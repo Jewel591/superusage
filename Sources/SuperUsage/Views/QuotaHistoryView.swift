@@ -23,10 +23,12 @@ struct QuotaHistoryView: View {
         VStack(alignment: .leading, spacing: 0) {
             controls
             Divider()
-            // Above `content`, not inside its chart branch: a card that stopped recording the moment it
-            // was selected has an empty range to show, and "Nothing in This Range" with no stated reason
-            // is precisely the silence this notice exists to break.
-            pausedNotice
+            // Above `content`, and deliberately outside every one of its branches. Each notice explains
+            // why the data below is thinner than expected, and the states that need explaining most are
+            // exactly the ones that draw no chart: a card that has never recorded produces no series at
+            // all, so it can't be selected, and "No History Yet" would otherwise tell a user to leave the
+            // app running for a trend that is never going to arrive.
+            notices
             content
         }
         .frame(minWidth: 560, minHeight: 400)
@@ -213,25 +215,61 @@ struct QuotaHistoryView: View {
         }
     }
 
-    /// Says so when the selected card has stopped recording because its refreshes are coming back from
-    /// a different account. Without this the chart just quietly stops growing, which reads as a bug.
+    /// Everything the window has to say about data that *isn't* being recorded, or wasn't written.
+    ///
+    /// Reported per card rather than for the selection, because the cards worth reporting are the ones
+    /// the selection can't reach. A card whose account never resolved has no series in the picker, and a
+    /// card that stopped recording the day it was installed has none either — keying this off the
+    /// selected scope (as it first did) made both of them invisible.
     @ViewBuilder
-    private var pausedNotice: some View {
-        if let providerID = selectedScope?.providerID,
-           container.quotaHistory.pausedCards.contains(providerID) {
-            Label(
-                "This provider's refreshes are coming back from a different account than the one superUsage started with, so recording is paused and this account's history stays its own. It resumes when the original account signs back in — or right away if you quit and reopen superUsage.",
-                systemImage: "pause.circle"
-            )
+    private var notices: some View {
+        let history = container.quotaHistory
+        let gaps = history.recordingGaps
+        // A store that won't open already says so in `content`; repeating it as a write failure here
+        // would be the same problem twice in two different voices.
+        let writeIssue = history.failure == nil ? (history.recordingFailure ?? history.retentionFailure) : nil
+        if !gaps.isEmpty || writeIssue != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(gaps) { gap in
+                    notice(icon: gap.reason.icon, text: text(for: gap))
+                }
+                if let writeIssue {
+                    notice(
+                        icon: "exclamationmark.triangle",
+                        text: history.recordingFailure != nil
+                            ? "superUsage couldn't save the latest points to the history database (\(writeIssue)). What's already on record still charts normally, and it will try again on the next refresh."
+                            : "superUsage couldn't delete points older than its retention window (\(writeIssue)). Nothing is lost — the database is just holding more than it means to, and it will try again later."
+                    )
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+        }
+    }
+
+    private func text(for gap: QuotaHistoryRecordingGap) -> String {
+        let name = container.displayName(for: gap.provider)
+        switch gap.reason {
+        case .unattributable:
+            return "\(name) isn't being recorded: superUsage can't tell which account it's signed in as, "
+                + "and history is only ever filed under a known account. Signing in with its CLI so the "
+                + "login names an account, then reopening superUsage, starts the recording."
+        case .mismatched:
+            return "\(name)'s refreshes are coming back from a different account than the one superUsage "
+                + "started with, so recording is paused and this account's history stays its own. It "
+                + "resumes when the original account signs back in — or right away if you quit and "
+                + "reopen superUsage."
+        }
+    }
+
+    private func notice(icon: String, text: String) -> some View {
+        Label(text, systemImage: icon)
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-        }
     }
 
     private var chart: some View {

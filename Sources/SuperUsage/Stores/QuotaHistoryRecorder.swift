@@ -45,6 +45,23 @@ final class QuotaHistoryRecorder {
     /// answers.
     private(set) var failure: String?
 
+    /// Why the last sample write failed, if it did — cleared by the next write that succeeds.
+    ///
+    /// Kept apart from `failure` because the two need opposite treatments on screen: an unreadable store
+    /// has nothing to draw, but a *write* failure leaves every earlier point perfectly readable. Blanking
+    /// the chart for it would destroy the very thing the user came to look at, so this is surfaced as a
+    /// non-blocking notice over a chart that still renders. It is surfaced at all because the alternative
+    /// is the failure mode this whole window exists to prevent: a line that just stops growing, with the
+    /// reason visible only in the log.
+    private(set) var recordingFailure: String?
+
+    /// Why the last retention pass failed, if it did — cleared by the next prune that succeeds.
+    ///
+    /// Nothing on screen depends on pruning, so this never blocks anything either. It is reported because
+    /// retention is a promise the app makes about the user's disk (35 days, `docs/quota-history.md`), and
+    /// a promise that has quietly stopped being kept should not be discoverable only by reading the log.
+    private(set) var retentionFailure: String?
+
     /// How often retention runs. Pruning is pure bookkeeping — nothing user-visible depends on it
     /// happening promptly — so once a day is plenty, and it costs one indexed range delete.
     private static let pruneInterval: TimeInterval = 24 * 60 * 60
@@ -92,8 +109,10 @@ final class QuotaHistoryRecorder {
             do {
                 try await self.open()
                 try await self.store.record(samples)
+                self.recordingFailure = nil
                 AppLog.debug(.history, "recorded \(samples.count) samples for \(cardID)")
             } catch {
+                self.recordingFailure = error.localizedDescription
                 AppLog.error(.history, "sample write failed for \(cardID): \(error.localizedDescription)")
             }
         }
@@ -138,6 +157,33 @@ final class QuotaHistoryRecorder {
             AppLog.info(.history, "\(cardID): refreshes are the launch account's again; history resumed")
         }
         return true
+    }
+
+    /// Every card that is currently recording nothing, and why.
+    ///
+    /// Two different silences, and neither one can be seen from the chart — a card that has never
+    /// recorded has no series, so it isn't even in the picker to be selected and explained:
+    ///
+    /// - `.unattributable` — the launch identity pass never named this card's account (a Codex login
+    ///   held in the keychain is the ordinary case), so `QuotaSampleExtractor` produces nothing to key
+    ///   and no row is ever written. Permanent for the life of the process, and *not* something waiting
+    ///   longer fixes, which is exactly why saying nothing would be the wrong answer.
+    /// - `.mismatched` — the card did resolve, but its refreshes are now coming back from a different
+    ///   account (see `isProven`). Recording is suspended until they match again.
+    ///
+    /// Only the account-first families can be in either state; everything else is keyed by card id alone
+    /// and always records.
+    var recordingGaps: [QuotaHistoryRecordingGap] {
+        registry.providers.compactMap { provider in
+            guard ProviderAccountID.families.contains(ProviderAccountID.family(of: provider.id)) else {
+                return nil
+            }
+            guard identityKeys[provider.id] != nil else {
+                return QuotaHistoryRecordingGap(provider: provider, reason: .unattributable)
+            }
+            guard pausedCards.contains(provider.id) else { return nil }
+            return QuotaHistoryRecordingGap(provider: provider, reason: .mismatched)
+        }
     }
 
     /// Opens the store and runs retention, independent of whether anything is being written.
@@ -267,11 +313,39 @@ final class QuotaHistoryRecorder {
             // error (a locked Application Support directory at launch) silence retention for a further
             // 24 hours, which is the app quietly keeping data past the window it promises.
             lastPruneAt = current
+            retentionFailure = nil
             if deleted > 0 {
                 AppLog.info(.history, "pruned \(deleted) samples older than \(Int(retentionWindow / 86_400))d")
             }
         } catch {
+            retentionFailure = error.localizedDescription
             AppLog.warn(.history, "prune failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+/// One card that is recording nothing, and why. See `QuotaHistoryRecorder.recordingGaps`.
+struct QuotaHistoryRecordingGap: Hashable, Sendable, Identifiable {
+    enum Reason: Hashable, Sendable {
+        /// No account was resolved for this card at launch, so nothing it reports can be keyed.
+        case unattributable
+        /// Refreshes are coming back from a different account than the one this process launched with.
+        case mismatched
+    }
+
+    let provider: Provider
+    let reason: Reason
+
+    var id: String { provider.id }
+}
+
+extension QuotaHistoryRecordingGap.Reason {
+    /// "this will not start on its own" vs "this is suspended" — the two need to read differently at a
+    /// glance, since only one of them is worth acting on.
+    var icon: String {
+        switch self {
+        case .unattributable: "person.crop.circle.badge.questionmark"
+        case .mismatched: "pause.circle"
         }
     }
 }

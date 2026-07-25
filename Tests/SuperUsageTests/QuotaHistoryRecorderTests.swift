@@ -162,6 +162,112 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertTrue(recorder.pausedCards.isEmpty)
     }
 
+    /// A card whose account never resolved records nothing, ever — the extractor has no key to file its
+    /// samples under, so `record` returns before the proof check and the card never lands in
+    /// `pausedCards`. That makes it the one silence nothing on screen can otherwise explain: it has no
+    /// series, so it isn't in the picker to be selected, and the window would tell the user to leave the
+    /// app running for a trend that is never going to arrive. It has to be reported by card.
+    func testCardWithNoResolvedAccountIsReportedAsRecordingNothing() async throws {
+        let recorder = makeRecorder(identityKeys: [:])
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: "account-a"))
+        _ = await recorder.flushPendingWrites()
+
+        let count = try await store.sampleCount()
+        XCTAssertEqual(count, 0)
+        XCTAssertTrue(recorder.pausedCards.isEmpty, "it never reaches the proof check")
+        XCTAssertEqual(recorder.recordingGaps.map(\.id), ["claude"])
+        XCTAssertEqual(recorder.recordingGaps.first?.reason, .unattributable)
+    }
+
+    /// A card that resolved but is now returning another account's numbers is a *different* silence: it
+    /// is suspended, not stuck, and resumes on its own. Reporting both the same way would tell a user to
+    /// go fix something that isn't broken — or leave them waiting on a recovery that can't happen.
+    func testMismatchedCardIsReportedSeparatelyFromAnUnresolvedOne() async throws {
+        let recorder = makeRecorder(identityKeys: ["claude": "account-a"])
+        XCTAssertTrue(recorder.recordingGaps.isEmpty, "nothing to report before anything goes wrong")
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: "account-b"))
+        _ = await recorder.flushPendingWrites()
+
+        XCTAssertEqual(recorder.recordingGaps.map(\.reason), [.mismatched])
+
+        recorder.record(snapshot: snapshot(used: 42, at: capturedAt.addingTimeInterval(300)))
+        _ = await recorder.flushPendingWrites()
+
+        XCTAssertTrue(recorder.recordingGaps.isEmpty, "cleared when the card resumes")
+    }
+
+    /// A write failure must be visible without blanking the chart. `failure` is the "can't read it at
+    /// all" state and takes the whole window over; a failed write leaves every earlier point perfectly
+    /// readable, so it gets its own state — otherwise the only symptom is a line that quietly stops
+    /// growing, which is exactly the ambiguity this window exists to remove.
+    func testWriteFailureIsSurfacedSeparatelyFromAnUnreadableStore() async throws {
+        let blocked = try BlockedStore()
+        defer { blocked.cleanUp() }
+        let recorder = makeRecorder(store: blocked.store)
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        _ = await recorder.flushPendingWrites()
+
+        XCTAssertNotNil(recorder.recordingFailure, "the window can say the latest points weren't saved")
+
+        // And it clears itself once writing works again, so a transient error doesn't leave a warning
+        // sitting over a chart that is filling in perfectly well.
+        try blocked.unblock()
+        recorder.record(snapshot: snapshot(used: 42, at: capturedAt.addingTimeInterval(300)))
+        _ = await recorder.flushPendingWrites()
+
+        XCTAssertNil(recorder.recordingFailure)
+    }
+
+    /// Retention is a promise about the user's disk (35 days, `docs/quota-history.md`). A prune that
+    /// keeps failing means the app has quietly stopped keeping it — nothing on screen changes, so
+    /// without this it would be discoverable only by reading the log.
+    func testRetentionFailureIsSurfacedAndClearedByASuccessfulPrune() async throws {
+        let blocked = try BlockedStore()
+        defer { blocked.cleanUp() }
+        var clock = capturedAt
+        let recorder = makeRecorder(store: blocked.store, now: { clock })
+
+        await recorder.pruneIfDue()
+        XCTAssertNotNil(recorder.retentionFailure)
+
+        try blocked.unblock()
+        clock = capturedAt.addingTimeInterval(60)
+        await recorder.pruneIfDue()
+
+        XCTAssertNil(recorder.retentionFailure)
+    }
+
+    /// A store whose directory is occupied by a plain *file*, so `load()` fails until `unblock()` clears
+    /// it. Lets a test drive the recorder's failure states with a real Core Data error rather than a stub.
+    private struct BlockedStore {
+        let store: QuotaHistoryStore
+        private let directory: URL
+        private let blocked: URL
+
+        init() throws {
+            directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("quota-history-blocked-\(UUID().uuidString)", isDirectory: true)
+            blocked = directory.appendingPathComponent("store", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data().write(to: blocked)
+            store = QuotaHistoryStore(
+                configuration: .init(name: "blocked", storeURL: blocked.appendingPathComponent("blocked.sqlite"))
+            )
+        }
+
+        func unblock() throws {
+            try FileManager.default.removeItem(at: blocked)
+            try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        }
+
+        func cleanUp() {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
     /// Providers outside the account-aware families have no account to prove. They must record normally
     /// rather than be gated into permanent silence by a check that can never pass for them.
     func testProviderWithoutAnAccountIdentityRecordsWithoutProof() async throws {
@@ -301,17 +407,9 @@ final class QuotaHistoryRecorderTests: XCTestCase {
     /// first prune runs — silence retention for another 24 hours, i.e. the app quietly keeping data past
     /// the window it promises.
     func testFailedPruneDoesNotCountAsHavingPruned() async throws {
-        // A file where the store's directory needs to be: `load()` fails until it's removed.
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("quota-history-blocked-\(UUID().uuidString)", isDirectory: true)
-        let blocked = directory.appendingPathComponent("store", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data().write(to: blocked)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let blockedStore = QuotaHistoryStore(
-            configuration: .init(name: "blocked", storeURL: blocked.appendingPathComponent("blocked.sqlite"))
-        )
+        let blocked = try BlockedStore()
+        defer { blocked.cleanUp() }
+        let blockedStore = blocked.store
         var clock = capturedAt
         let recorder = makeRecorder(store: blockedStore, now: { clock })
 
@@ -319,8 +417,7 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertNotNil(recorder.failure, "the store could not be opened, so nothing was pruned")
 
         // Clear the blockage and put an expired row in place.
-        try FileManager.default.removeItem(at: blocked)
-        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try blocked.unblock()
         try await blockedStore.load()
         try await blockedStore.record([sample(used: 10, at: capturedAt.addingTimeInterval(-40 * 24 * 60 * 60))])
 

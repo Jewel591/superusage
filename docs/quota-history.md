@@ -69,11 +69,25 @@ Some consequences worth knowing:
   and reopen it — until you do, the whole app still attributes to the previous account. History is the
   one exception that refuses to guess: every refresh has to show which account the login it actually used
   belongs to, and a refresh that shows a different account than the app launched with — or that can't
-  show one at all, which is what a Claude Desktop login looks like, since that one login is shared by
-  every Claude card — is **not recorded**, and the window says so. Recording picks up again by itself
-  once the refreshes are the launch account's again, and a relaunch resolves it either way. Everything
-  else on screen corrects itself at the next launch; a history row written under the wrong account never
-  could.
+  show one at all — is **not recorded**, and the window says so. Recording picks up again by itself once
+  the refreshes are the launch account's again, and a relaunch resolves it either way. Everything else on
+  screen corrects itself at the next launch; a history row written under the wrong account never could.
+
+  What counts as showing an account differs by provider, because their logins do. A Codex login names its
+  account in the login itself, so the refresh carries that name whichever file or keychain item it ended
+  up using. A Claude login names no account anywhere — not in the token, not in the usage response — so
+  the only thing that can place it is the home it came out of, and the account that home is signed in to.
+  That makes three Claude cases unrecordable rather than guessed at: a Claude Desktop login (one
+  system-wide login shared by every Claude card, so it belongs to no particular one), a login supplied
+  through `CLAUDE_CODE_OAUTH_TOKEN` (whatever the environment happened to export), and a card pointed at a
+  custom `CLAUDE_CONFIG_DIR` that falls back to the default keychain login because nothing was ever saved
+  under that directory — a working login, but the default home's, not that card's. Signing in *at* the
+  card's own home is what makes it recordable. A sign-in that lands while a refresh is already in the air
+  is dropped too, rather than filed under whoever arrived mid-flight.
+
+  A card that has no account at all — a Codex login held in the keychain is the usual way this happens —
+  records nothing, and since it never records, it never appears in the picker either. The window names it
+  in a notice instead, because that is a silence waiting will not fix.
 - **Metrics without a limit never appear.** Daily spend, token counts, and the Usage Trend chart are
   unbounded, so there's no "remaining" to plot. They stay on the dashboard.
 - **History starts when you update.** The chart fills in from the first refresh after this version is
@@ -94,6 +108,12 @@ shared history rather than two.
 - **Bounded retention.** Points older than **35 days** are deleted. Pruning runs at most once a day, off
   the refresh path. The 35-day window covers the longest chart range (30 days) with room for a Mac that
   was asleep across a window boundary.
+
+If the database can't be read at all, the window says so instead of showing an empty chart — "there is
+nothing yet" and "we couldn't look" are very different answers. A failure to *write* is reported the
+other way round: the chart keeps drawing everything already on record, with a note above it saying the
+latest points didn't save. A retention pass that fails is noted the same way; nothing is lost, the
+database is just holding more than it means to until the next pass succeeds.
 
 Deleting the file resets the history; the app recreates it and starts recording again on the next
 refresh. Nothing else in the app depends on it.

@@ -304,6 +304,7 @@ final class ClaudeProvider: ProviderRuntime {
         }
 
         MetricLine.appendNoDataIfNeeded(&mapped.lines)
+        let accountProof = await provenAccount(for: state.source, pinnedTo: homeAccount)
         return ProviderSnapshot.make(
             provider: provider,
             plan: mapped.plan,
@@ -312,13 +313,39 @@ final class ClaudeProvider: ProviderRuntime {
             usageHistory: usageHistory,
             warning: warning,
             quotaObservedAt: mapped.observedAt,
-            // Whose account these numbers are. A Claude token names no account, so what proves it is the
-            // credential's *home*: this card reads only its own home, so a credential that came from
-            // there belongs to the account that home is signed in to. A credential that came from
-            // anywhere else — Claude Desktop's system-wide login, an ambient env token — proves nothing
-            // and leaves this `nil`, which quota history reads as "do not write".
-            accountProof: state.source.isBoundToItsHome ? homeAccount : nil
+            accountProof: accountProof
         )
+    }
+
+    /// Whose account this reading may be recorded under — `nil` meaning "unprovable, don't record".
+    ///
+    /// A Claude OAuth token names no account (unlike Codex's, which carries one), and neither does the
+    /// usage response, so the only thing that can tie these numbers to an account is the *home* the
+    /// winning credential came out of: this card reads one home, and that home's `.claude.json` names
+    /// who is signed in there. Two conditions, both required:
+    ///
+    /// 1. The credential provably came from this card's own home — `isBoundToThisHome`, which excludes
+    ///    Claude Desktop's system-wide login, an ambient `CLAUDE_CODE_OAUTH_TOKEN`, and the bare-default
+    ///    keychain item a `CLAUDE_CONFIG_DIR` store falls back to.
+    /// 2. The home still names the same account **after** the fetch as it did before it. The identity is
+    ///    read up front, next to the credentials (a later-only read would describe whoever signed in
+    ///    while the request was in flight); re-reading it here pins the pair across the whole request, so
+    ///    a re-login landing mid-refresh drops the reading instead of filing it under the new account.
+    ///    This is the identity-side twin of the `credentialsChanged` check `fetchLiveUsage` already runs.
+    private func provenAccount(
+        for source: ClaudeCredentialState.Source,
+        pinnedTo homeAccount: String?
+    ) async -> String? {
+        guard let homeAccount, authStore.isBoundToThisHome(source) else { return nil }
+        let after = await loadOffMainActor { [authStore] in authStore.homeAccountIdentityKey() }
+        guard after == homeAccount else {
+            AppLog.warn(
+                LogTag.auth("claude"),
+                "this home changed account while the refresh was in flight; reading not attributed"
+            )
+            return nil
+        }
+        return homeAccount
     }
 
     private func fetchLiveUsage(

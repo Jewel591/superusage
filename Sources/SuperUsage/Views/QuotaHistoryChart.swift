@@ -82,10 +82,13 @@ struct QuotaHistoryChart: View {
                     .foregroundStyle(.secondary.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                     .annotation(position: .top, alignment: .center, spacing: 2) {
+                        // No `.help` tooltip: the footnote under the chart already counts the resets in
+                        // view, so hovering would only repeat it. The label is for VoiceOver, which has
+                        // no footnote to read.
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .help("Quota reset")
+                            .accessibilityLabel("Quota reset")
                     }
             }
 

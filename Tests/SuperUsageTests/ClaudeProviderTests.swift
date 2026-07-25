@@ -215,12 +215,45 @@ final class ClaudeAuthStoreTests: XCTestCase {
     /// there. Desktop's login is one system-wide login shared by every Claude card, and an ambient
     /// `CLAUDE_CODE_OAUTH_TOKEN` is whatever the launch environment exported — attributing either would
     /// be a guess, written into a history that can never be corrected.
-    func testOnlyHomeBoundCredentialSourcesCanBeAttributedToAnAccount() {
-        XCTAssertTrue(ClaudeCredentialState.Source.file.isBoundToItsHome)
-        XCTAssertTrue(ClaudeCredentialState.Source.keychainCurrentUser(service: "svc").isBoundToItsHome)
-        XCTAssertTrue(ClaudeCredentialState.Source.keychainLegacy(service: "svc").isBoundToItsHome)
-        XCTAssertFalse(ClaudeCredentialState.Source.desktop.isBoundToItsHome)
-        XCTAssertFalse(ClaudeCredentialState.Source.environment.isBoundToItsHome)
+    func testOnlyHomeBoundCredentialSourcesCanBeAttributedToAnAccount() throws {
+        let store = ClaudeAuthStore(
+            environment: FakeEnvironment([:]),
+            files: FakeFiles([:]),
+            keychain: FakeKeychain()
+        )
+        let ownService = try XCTUnwrap(store.keychainServiceCandidates().first)
+
+        XCTAssertTrue(store.isBoundToThisHome(.file))
+        XCTAssertTrue(store.isBoundToThisHome(.keychainCurrentUser(service: ownService)))
+        XCTAssertTrue(store.isBoundToThisHome(.keychainLegacy(service: ownService)))
+        XCTAssertFalse(store.isBoundToThisHome(.desktop))
+        XCTAssertFalse(store.isBoundToThisHome(.environment))
+        // Some other card's keychain item is not this home's, whatever it is.
+        XCTAssertFalse(store.isBoundToThisHome(.keychainCurrentUser(service: "Claude Code-credentials-abc123")))
+    }
+
+    /// The keychain fallback that made "the credential is in my home" *not* mean "the credential is
+    /// mine": a `.standard` store under a `CLAUDE_CONFIG_DIR` override probes its own hashed item first
+    /// and then the **bare default** item, which belongs to whoever is signed in at `~/.claude`. When the
+    /// override's own item doesn't exist, the fallback keeps the card working (deliberate, and older than
+    /// history) — but attributing that credential to the override home's account would file one person's
+    /// usage under another's, permanently. And this is not a race: it is the steady state for anyone who
+    /// exports `CLAUDE_CONFIG_DIR` without ever having logged in under it.
+    func testDefaultKeychainFallbackUnderAConfigDirOverrideProvesNothing() throws {
+        let store = ClaudeAuthStore(
+            environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/work"]),
+            files: FakeFiles([:]),
+            keychain: FakeKeychain()
+        )
+        let candidates = store.keychainServiceCandidates()
+        XCTAssertEqual(candidates.count, 2, "override home's own item, then the bare default")
+
+        XCTAssertTrue(store.isBoundToThisHome(.keychainCurrentUser(service: candidates[0])))
+        XCTAssertFalse(
+            store.isBoundToThisHome(.keychainCurrentUser(service: candidates[1])),
+            "the bare default item is another home's login and can never prove this home's account"
+        )
+        XCTAssertFalse(store.isBoundToThisHome(.keychainLegacy(service: candidates[1])))
     }
 
     /// A scoped card must name the account at *its own* config dir, never the default home's — that
@@ -890,6 +923,68 @@ final class ClaudeProviderTests: XCTestCase {
         let snapshot = await provider.refresh()
 
         XCTAssertNil(snapshot.accountProof)
+    }
+
+    /// Stands in for a `claude` re-login landing while a refresh is in flight: rewrites the home's
+    /// identity file at the exact moment the usage request goes out.
+    private final class ReloginDuringRequest: HTTPClient, @unchecked Sendable {
+        let files: FakeFiles
+        let identityPath: String
+        let newIdentity: String
+        let response: HTTPResponse
+
+        init(files: FakeFiles, identityPath: String, newIdentity: String, response: HTTPResponse) {
+            self.files = files
+            self.identityPath = identityPath
+            self.newIdentity = newIdentity
+            self.response = response
+        }
+
+        func send(_ request: HTTPRequest) async throws -> HTTPResponse {
+            files.files[identityPath] = newIdentity
+            return response
+        }
+    }
+
+    /// The identity is read before the fetch (so it describes the home the credential came from) and
+    /// checked again after it. Without the second read, a sign-out and sign-in that lands mid-request
+    /// would have these numbers — fetched with the *old* account's token — filed under the new account,
+    /// which is the one mistake an append-only history can never take back. Dropping the reading is the
+    /// cheap outcome: the next refresh fills the gap.
+    func testAccountChangingDuringTheRequestDropsTheProofRatherThanRestampingIt() async {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let files = FakeFiles([
+            "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"pro","scopes":["user:profile"]}}"#,
+            "/tmp/claude/.claude.json": #"{"oauthAccount":{"accountUuid":"ACCT-1","organizationUuid":"ORG-9"}}"#
+        ])
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+                files: files,
+                keychain: FakeKeychain(),
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: ReloginDuringRequest(
+                files: files,
+                identityPath: "/tmp/claude/.claude.json",
+                newIdentity: #"{"oauthAccount":{"accountUuid":"ACCT-2","organizationUuid":"ORG-2"}}"#,
+                response: HTTPResponse(
+                    statusCode: 200,
+                    headers: [:],
+                    body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+                )
+            )),
+            logUsageScanner: ClaudeLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(
+            snapshot.accountProof,
+            "neither the account that fetched nor the one that signed in mid-flight may be claimed"
+        )
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
