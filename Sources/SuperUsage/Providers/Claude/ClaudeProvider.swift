@@ -33,6 +33,9 @@ final class ClaudeProvider: ProviderRuntime {
     /// us. Mirrors the legacy plugin's `cachedUsageData` + `rateLimitedUntilMs`.
     private var cachedCredentialFingerprint: Data?
     private var lastGoodUsage: ClaudeMappedUsage?
+    /// When `lastGoodUsage` was actually fetched, so a re-serve during the cooldown can say so rather
+    /// than pass a stale reading off as a new observation.
+    private var lastGoodUsageAt: Date?
     private var rateLimitedUntil: Date?
     private static let rateLimitCooldown: TimeInterval = 5 * 60
 
@@ -103,14 +106,20 @@ final class ClaudeProvider: ProviderRuntime {
         previousFallbackError: ClaudeAuthError?
     ) async -> ProviderSnapshot {
         let allowDesktopInteraction = ProviderRefreshContext.isManual
-        let credentialLoad = await loadOffMainActor { [authStore] in
-            authStore.loadCredentialSet(
-                allowDesktopInteraction: allowDesktopInteraction,
-                forceDesktopFallback: forceDesktopFallback
+        // Both disk reads ride one hop off the main actor. The home's account is read here, next to the
+        // credentials it belongs with, rather than after the fetch: read later it would describe a home
+        // that could have been re-logged-in during the request, and `probe` would attribute this
+        // reading to whoever signed in while it was in flight.
+        let (credentialLoad, homeAccount) = await loadOffMainActor { [authStore] in
+            (
+                authStore.loadCredentialSet(
+                    allowDesktopInteraction: allowDesktopInteraction,
+                    forceDesktopFallback: forceDesktopFallback
+                ),
+                authStore.homeAccountIdentityKey()
             )
         }
-        let storedCandidates = credentialLoad.candidates
-        let candidates = storedCandidates.filter {
+        let candidates = credentialLoad.candidates.filter {
             $0.hasUsableAccessToken && (!forceDesktopFallback || $0.source == .desktop)
         }
         if forceDesktopFallback {
@@ -168,7 +177,10 @@ final class ClaudeProvider: ProviderRuntime {
         // through to the next rather than failing the whole refresh; any non-auth error (rate limit,
         // request/transport failure) surfaces immediately so a real outage is never masked as a retry.
         var lastFallbackError: ClaudeAuthError?
-        var credentialGeneration = ClaudeCredentialGeneration(storedCandidates)
+        var credentialGeneration = ClaudeCredentialGeneration(credentialLoad.attributionCandidates)
+        // Logins this refresh has *ruled out* — each one the endpoint rejected as unauthenticated. They
+        // stop competing for the attribution of whatever succeeds afterwards; see `attributionIsAmbiguous`.
+        var eliminatedLogins: Set<Data> = []
         for state in candidates {
             // The environment token cannot read subscription usage. If a CLI login was rejected, try
             // Desktop before this spend-only fallback can turn the refresh into a false success.
@@ -187,7 +199,14 @@ final class ClaudeProvider: ProviderRuntime {
                 let snapshot = try await probe(
                     state: state,
                     credentialGeneration: &credentialGeneration,
-                    fallbackWarning: desktopFallbackWarning
+                    fallbackWarning: desktopFallbackWarning,
+                    homeAccount: homeAccount,
+                    attributionIsAmbiguous: Self.attributionIsAmbiguous(
+                        winner: state,
+                        among: credentialLoad.attributionCandidates,
+                        eliminated: eliminatedLogins,
+                        isBoundToThisHome: { [authStore] in authStore.isBoundToThisHome($0) }
+                    )
                 )
                 AppLog.info(LogTag.plugin("claude"), "refresh end (\(Int(Date().timeIntervalSince(start) * 1000))ms)")
                 return snapshot
@@ -201,6 +220,7 @@ final class ClaudeProvider: ProviderRuntime {
             } catch let error as ClaudeAuthError where error.allowsAuthFallback {
                 AppLog.warn(LogTag.auth("claude"), "\(state.source.label) failed (\(error)); falling back to next source if any")
                 lastFallbackError = error
+                eliminatedLogins.insert(Self.loginFingerprint(state.oauth))
                 continue
             } catch {
                 return ProviderSnapshot.error(provider: provider, error: error)
@@ -223,10 +243,60 @@ final class ClaudeProvider: ProviderRuntime {
         )
     }
 
+    /// Whether more than one distinct login in this card's own home could have produced these numbers.
+    ///
+    /// This is the hole that "the credential came from my home" leaves open, and it is a **supported**
+    /// state rather than a corrupt one: the loader deliberately reads keychain *and* file and prefers the
+    /// keychain, because a re-login can land in either one and leave the other behind (see
+    /// `orderedStoredCandidates`, issue #687). So a home can hold a live login for account B in the file
+    /// and a leftover — still-valid — token for account A in the keychain, with `.claude.json` naming B.
+    /// The keychain wins, A's numbers come back, and nothing about the home has changed before, during, or
+    /// after the request. Both the identity re-read and `credentialsChanged` see a perfectly stable home,
+    /// because it *is* stable; what's unknown is which of its two logins belongs to the account it names.
+    ///
+    /// So attribution is refused whenever a second bound login is still in the running. A login the
+    /// endpoint has already rejected this refresh is not — that is the ordinary "stale source, fresh
+    /// re-login elsewhere" recovery, and once the stale one is out, the survivor is the home's only
+    /// working login. The cost is samples lost while two live logins sit in one home; the alternative is
+    /// one account's usage welded into another's series, which no later refresh can take back.
+    ///
+    /// Logins are compared by refresh token (falling back to the access token), so the same login copied
+    /// into both stores — or rotated in one of them — is correctly seen as one login, not two.
+    ///
+    /// `among` must be `ClaudeCredentialLoad.attributionCandidates` — every login the home holds — and
+    /// never the probe order: a login that can't *read usage* (no `user:profile` scope) is dropped from
+    /// the probe order once an ambient token exists, yet it can still be the account the home names, and
+    /// a competitor invisible to this check is exactly a competitor that gets ignored.
+    static func attributionIsAmbiguous(
+        winner: ClaudeCredentialState,
+        among candidates: [ClaudeCredentialState],
+        eliminated: Set<Data>,
+        isBoundToThisHome: (ClaudeCredentialState.Source) -> Bool
+    ) -> Bool {
+        // An unbound winner (Desktop, ambient token) has no proof to lose — `provenAccount` already
+        // refuses it, and the other candidates say nothing about a credential that isn't from this home.
+        guard isBoundToThisHome(winner.source) else { return false }
+        let winnerLogin = loginFingerprint(winner.oauth)
+        return candidates.contains { other in
+            guard isBoundToThisHome(other.source) else { return false }
+            let login = loginFingerprint(other.oauth)
+            return login != winnerLogin && !eliminated.contains(login)
+        }
+    }
+
+    /// Identifies a *login* rather than a credential snapshot: the refresh token survives access-token
+    /// rotation, so one login saved in two places (or refreshed in one of them) still reads as one login.
+    static func loginFingerprint(_ oauth: ClaudeOAuth) -> Data {
+        let material = oauth.refreshToken?.nilIfEmpty ?? oauth.accessToken ?? ""
+        return Data(SHA256.hash(data: Data(material.utf8)))
+    }
+
     private func probe(
         state initialState: ClaudeCredentialState,
         credentialGeneration: inout ClaudeCredentialGeneration,
-        fallbackWarning: String?
+        fallbackWarning: String?,
+        homeAccount: String?,
+        attributionIsAmbiguous: Bool
     ) async throws -> ProviderSnapshot {
         var state = initialState
         var mapped = ClaudeMappedUsage(
@@ -292,14 +362,51 @@ final class ClaudeProvider: ProviderRuntime {
         }
 
         MetricLine.appendNoDataIfNeeded(&mapped.lines)
+        let accountProof = attributionIsAmbiguous
+            ? nil
+            : await provenAccount(for: state.source, pinnedTo: homeAccount)
         return ProviderSnapshot.make(
             provider: provider,
             plan: mapped.plan,
             lines: mapped.lines,
             refreshedAt: now(),
             usageHistory: usageHistory,
-            warning: warning
+            warning: warning,
+            quotaObservedAt: mapped.observedAt,
+            accountProof: accountProof
         )
+    }
+
+    /// Whose account this reading may be recorded under — `nil` meaning "unprovable, don't record".
+    ///
+    /// A Claude OAuth token names no account (unlike Codex's, which carries one), and neither does the
+    /// usage response, so the only thing that can tie these numbers to an account is the *home* the
+    /// winning credential came out of: this card reads one home, and that home's `.claude.json` names
+    /// who is signed in there. Two conditions, both required:
+    ///
+    /// 1. The credential provably came from this card's own home — `isBoundToThisHome`, which excludes
+    ///    Claude Desktop's system-wide login, an ambient `CLAUDE_CODE_OAUTH_TOKEN`, and the bare-default
+    ///    keychain item a `CLAUDE_CONFIG_DIR` store falls back to — and it was the home's only login
+    ///    still in the running (`attributionIsAmbiguous`, checked by the caller).
+    /// 2. The home still names the same account **after** the fetch as it did before it. The identity is
+    ///    read up front, next to the credentials (a later-only read would describe whoever signed in
+    ///    while the request was in flight); re-reading it here pins the pair across the whole request, so
+    ///    a re-login landing mid-refresh drops the reading instead of filing it under the new account.
+    ///    This is the identity-side twin of the `credentialsChanged` check `fetchLiveUsage` already runs.
+    private func provenAccount(
+        for source: ClaudeCredentialState.Source,
+        pinnedTo homeAccount: String?
+    ) async -> String? {
+        guard let homeAccount, authStore.isBoundToThisHome(source) else { return nil }
+        let after = await loadOffMainActor { [authStore] in authStore.homeAccountIdentityKey() }
+        guard after == homeAccount else {
+            AppLog.warn(
+                LogTag.auth("claude"),
+                "this home changed account while the refresh was in flight; reading not attributed"
+            )
+            return nil
+        }
+        return homeAccount
     }
 
     private func fetchLiveUsage(
@@ -370,8 +477,16 @@ final class ClaudeProvider: ProviderRuntime {
             return rateLimitedSnapshot(credentials: working.oauth, retryAfterSeconds: retryAfterSeconds)
         }
 
-        let mapped = try ClaudeUsageMapper.mapUsageResponse(response, credentials: working.oauth, now: now())
+        var mapped = try ClaudeUsageMapper.mapUsageResponse(response, credentials: working.oauth, now: now())
+        let observedAt = now()
+        // Stamp the fresh reading with the same instant the cooldown re-serve will stamp it with. One
+        // `now()` for both, and specifically *this* one: `probe` takes its own `now()` for `refreshedAt`
+        // after the pricing and log scans, so leaving this reading unstamped would date it minutes later
+        // than the re-serve dates it. The first re-serve would then miss the row it is meant to collide
+        // with and mint a second point for a reading taken once. See `ProviderSnapshot.quotaObservedAt`.
+        mapped.observedAt = observedAt
         lastGoodUsage = mapped
+        lastGoodUsageAt = observedAt
         rateLimitedUntil = nil
         return mapped
     }
@@ -386,6 +501,9 @@ final class ClaudeProvider: ProviderRuntime {
         }
         mapped.lines.append(ClaudeUsageMapper.rateLimitedNote(retryAfterSeconds: retryAfterSeconds))
         mapped.warning = ClaudeUsageMapper.rateLimitedWarning(retryAfterSeconds: retryAfterSeconds)
+        // These bars are the previous reading, not a new one. Carrying when they were actually taken is
+        // what keeps quota history from recording a cooldown as a flat, measured stretch.
+        mapped.observedAt = lastGoodUsageAt
         return mapped
     }
 
@@ -396,6 +514,7 @@ final class ClaudeProvider: ProviderRuntime {
         guard cachedCredentialFingerprint != fingerprint else { return }
         cachedCredentialFingerprint = fingerprint
         lastGoodUsage = nil
+        lastGoodUsageAt = nil
         rateLimitedUntil = nil
     }
 

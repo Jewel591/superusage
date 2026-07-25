@@ -6,6 +6,13 @@ struct ClaudeMappedUsage: Equatable, Sendable {
     /// Provider header notice (amber triangle + tooltip) riding along with this usage, e.g. the
     /// rate-limited warning. `nil` for a clean fetch.
     var warning: String?
+    /// When these quota figures were actually read from Anthropic, set only when they are a *re-serve*
+    /// of an earlier reading (the rate-limit cooldown path). `nil` means they were read just now.
+    ///
+    /// Without this, a cooldown — which this endpoint enters often — looks identical to a steady quota:
+    /// every 5 minutes the same numbers arrive on a successful, non-error snapshot stamped with the
+    /// current time. Anything recording history would draw a flat line through hours it never measured.
+    var observedAt: Date?
 }
 
 enum ClaudeUsageMapper {

@@ -81,7 +81,17 @@ struct DefaultAccountObserver: Sendable {
             }
             configDir = raw
         }
-        let anchor = expandTilde(configDir)
+        return observeClaude(configDirPath: configDir)
+    }
+
+    /// The account signed in at one specific Claude config dir.
+    ///
+    /// Split out from `observeClaude()` so a caller holding a card's own home (an extra account card is
+    /// pinned to its config dir) can ask about *that* home rather than whichever one the environment
+    /// currently points at — the two answer differently, and using the default home's answer for a
+    /// custom-dir card would attribute it to the wrong account.
+    func observeClaude(configDirPath: String) -> Outcome {
+        let anchor = expandTilde(configDirPath)
         // The identity file sits inside a custom config dir, but next to (not inside) the default
         // `~/.claude` — Claude Code keeps the default's state at `~/.claude.json`.
         let identityPath = anchor == expandTilde("~/.claude")
@@ -154,19 +164,31 @@ struct DefaultAccountObserver: Sendable {
             guard let auth = CodexAuthStore.parseAuth(text),
                   auth.tokens?.accessToken?.nilIfEmpty != nil
             else { continue }
-            let payload = auth.tokens?.idToken.flatMap { ProviderParse.jwtPayload($0) }
-            let email = (payload?["email"] as? String)?.nilIfEmpty
-            if let accountID = auth.tokens?.accountID?
-                .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty {
-                return .resolved(identityKey: accountID.lowercased(), label: email, anchor: anchor)
-            }
-            if let claimID = Self.chatGPTAccountID(inIDTokenPayload: payload) {
-                return .resolved(identityKey: claimID.lowercased(), label: email, anchor: anchor)
+            let email = (auth.tokens?.idToken.flatMap { ProviderParse.jwtPayload($0) }?["email"] as? String)?
+                .nilIfEmpty
+            if let identityKey = Self.codexIdentityKey(auth) {
+                return .resolved(identityKey: identityKey, label: email, anchor: anchor)
             }
         }
         return sawFootprint
             ? .unresolved(reason: "credentials present but no account identity")
             : .absent
+    }
+
+    /// Codex identity key straight from a credential: `tokens.account_id`, else the id_token's ChatGPT
+    /// account claim (the value the CLI itself copies into `account_id`). `nil` for a credential that
+    /// can't name its account — never a path-derived guess.
+    ///
+    /// Shared by the launch-time observer above and by `CodexProvider`, which stamps the credential that
+    /// actually produced a snapshot onto it (`ProviderSnapshot.accountProof`). Quota history compares
+    /// the two for equality, so they must be one formula and not two that agree today.
+    static func codexIdentityKey(_ auth: CodexAuth) -> String? {
+        if let accountID = auth.tokens?.accountID?
+            .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty {
+            return accountID.lowercased()
+        }
+        let payload = auth.tokens?.idToken.flatMap { ProviderParse.jwtPayload($0) }
+        return Self.chatGPTAccountID(inIDTokenPayload: payload)?.lowercased()
     }
 
     /// The account id inside a Codex id_token: `chatgpt_account_id` under the

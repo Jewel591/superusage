@@ -65,7 +65,11 @@ The image is a flexible-height PNG using the app's look — the provider's mark 
 
 ## Footer
 
-The bar pinned to the bottom of the popover. On the left: the app version, and a live "Next update in …" countdown you can click (or press **⌘R**) to refresh right away. On the right: an **Options** menu button. It holds everything in one place — **Customize**, **Settings**, **Share Screenshot** (submenu of providers), **Check for Updates…**, **About SuperUsage**, and **Quit SuperUsage**.
+The bar pinned to the bottom of the popover. On the left: the app version, and a live "Next update in …" countdown you can click (or press **⌘R**) to refresh right away. On the right: an **Options** menu button. It holds everything in one place — **Customize**, **Settings**, **Usage History…**, **Share Screenshot** (submenu of providers), **Check for Updates…**, **About SuperUsage**, and **Quit SuperUsage**.
+
+**Usage History…** opens a separate window charting how much of a quota was left over time — see
+[Usage History](quota-history.md). It's the counterpart to the meters on this screen: they show the
+level now, it shows how you got there.
 
 ## Customize
 

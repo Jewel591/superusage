@@ -30,6 +30,11 @@ enum Theme {
         }
     }
 
+    /// The quota-history chart's line and fill tint: the same system blue a healthy meter fills with,
+    /// so a trend chart reads as the same visual language as the bar it explains. A `Color` (not the
+    /// erased `AnyShapeStyle` the meters take) because Swift Charts composes it into gradients.
+    static let chartSeries = Color(nsColor: .systemBlue)
+
     /// Inline notice/alert tint (refresh warning triangle, pin-limit notice, settings errors) — the
     /// system orange at full strength, matching the meter fills.
     static let notice = AnyShapeStyle(Color(nsColor: .systemOrange))

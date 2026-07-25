@@ -22,6 +22,18 @@ enum ProviderAccountID {
         return digest.prefix(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The **full** identity digest, for keys that have no registry to arbitrate a collision.
+    ///
+    /// Card ids use `hash8` and get away with it because `availableID(for:in:)` salts a colliding
+    /// identity until its id is free — the registry sees both accounts and can tell them apart. A quota
+    /// history series key has no such arbiter: it is derived independently, by two processes, possibly
+    /// years apart, and history is append-only. Two identities colliding in eight hex chars would merge
+    /// two accounts' rows onto one line with nothing left to unpick them by, so anything permanent keys
+    /// on the whole hash.
+    static func identityDigest(_ identityKey: String) -> String {
+        SHA256.hash(data: Data(identityKey.lowercased().utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// The family a card id belongs to: `claude@ab12cd34` → `claude`, bare ids map to themselves.
     static func family(of cardID: String) -> String {
         cardID.firstIndex(of: "@").map { String(cardID[..<$0]) } ?? cardID
@@ -203,6 +215,19 @@ final class ProviderAccountsStore {
     /// name resolver — see `ProviderAccountRecord.resolvedDisplayName`.
     func resolvedDisplayName(cardID: String) -> String? {
         records.first { $0.id == cardID }?.resolvedDisplayName
+    }
+
+    /// The human name of the account whose identity hashes to `digest` — its rename when it has one,
+    /// otherwise the provider-reported label ("someone@example.com (Acme)").
+    ///
+    /// Quota history stores accounts as an identity digest and never the identity key itself, so this is
+    /// the only way back to a name. `nil` when nothing on record matches, which is the normal state for
+    /// history belonging to an account that has since been signed out — the caller shows the truncated
+    /// digest instead, which at least tells the user the two series are different people.
+    func accountLabel(identityDigest digest: String) -> String? {
+        guard let record = records.first(where: { ProviderAccountID.identityDigest($0.identityKey) == digest })
+        else { return nil }
+        return record.customLabel?.nilIfEmpty ?? record.label?.nilIfEmpty
     }
 
     /// Card id → resolved title for every record — the map the CLI/API boundary applies to its

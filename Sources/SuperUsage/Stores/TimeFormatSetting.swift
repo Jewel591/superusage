@@ -20,8 +20,9 @@ enum TimeFormatSetting: String, Hashable, Sendable, CaseIterable, UserDefaultsBa
         }
     }
 
-    /// Short time string ("5:30 PM" / "17:30") honoring the override, via the locale's hour cycle.
-    func shortTime(_ date: Date, base: Locale = .current) -> String {
+    /// The base locale with the override applied to its hour cycle. Use this for any format style that
+    /// prints an hour, so every wall-clock reading in the app answers to the same setting.
+    func locale(base: Locale = .current) -> Locale {
         var components = Locale.Components(locale: base)
         switch self {
         case .auto:
@@ -31,8 +32,11 @@ enum TimeFormatSetting: String, Hashable, Sendable, CaseIterable, UserDefaultsBa
         case .twentyFourHour:
             components.hourCycle = .zeroToTwentyThree
         }
-        return date.formatted(
-            Date.FormatStyle(date: .omitted, time: .shortened, locale: Locale(components: components))
-        )
+        return Locale(components: components)
+    }
+
+    /// Short time string ("5:30 PM" / "17:30") honoring the override, via the locale's hour cycle.
+    func shortTime(_ date: Date, base: Locale = .current) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale(base: base)))
     }
 }

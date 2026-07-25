@@ -40,6 +40,9 @@ final class StatusItemController: NSObject {
         onDismiss: { [weak self] in self?.hidePanel() }
     )
     private let hostingController: NSHostingController<AnyView>
+    /// The standalone Usage History window, reached from the footer's Options menu. Held here so it
+    /// outlives the menu click that opens it.
+    private let quotaHistoryWindow: QuotaHistoryWindowController
     /// The panel's backdrop: an opaque tray by default, swapped to a behind-window vibrancy view when
     /// the transparency style is non-opaque. Built once and toggled, so it can't race the style observer.
     private let backdrop = PopoverBackdropView(cornerRadius: StatusItemController.cornerRadius)
@@ -59,6 +62,11 @@ final class StatusItemController: NSObject {
             statusItem.button?.image = image
         }
 
+        // Owns the standalone Usage History window; created up front (it builds nothing until first
+        // opened) so the footer menu's action can be a plain closure rather than an optional lookup.
+        let quotaHistoryWindow = QuotaHistoryWindowController(container: container)
+        self.quotaHistoryWindow = quotaHistoryWindow
+
         let hosting = NSHostingController(
             rootView: AnyView(
                 DashboardView()
@@ -68,6 +76,9 @@ final class StatusItemController: NSObject {
                     .environment(container.transparency)
                     .environment(updater)
                     .environment(\.codexResetClaim, container.codexResetClaim)
+                    .environment(\.openQuotaHistory) { [weak quotaHistoryWindow] in
+                        quotaHistoryWindow?.present()
+                    }
             )
         )
         // The host view fills the panel. SwiftUI measures each screen and drives the panel height;

@@ -169,7 +169,12 @@ final class CodexProvider: ProviderRuntime {
             plan: mapped.plan,
             lines: mapped.lines,
             refreshedAt: now(),
-            usageHistory: usageHistory
+            usageHistory: usageHistory,
+            // Whose account these numbers are, taken from the credential that just fetched them — not
+            // from whichever `auth.json` happens to be on disk. `refresh()` walks a candidate chain and
+            // falls back to the keychain, so the two answer differently exactly when it matters. Read
+            // from the post-fetch `authState` so a token rotated mid-probe is the one that's attributed.
+            accountProof: DefaultAccountObserver.codexIdentityKey(authState.auth)
         )
     }
 

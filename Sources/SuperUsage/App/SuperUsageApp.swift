@@ -74,4 +74,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         container?.telemetry.flush()
     }
+
+    /// Quota samples are written off the refresh path, so a quit landing moments after a refresh would
+    /// otherwise strand that pass's points and leave a hole in the trend at every quit.
+    ///
+    /// This defers termination rather than blocking in `applicationWillTerminate`: the pending writes are
+    /// awaited on the main actor, so blocking the main thread to wait for them would deadlock — the very
+    /// work being waited on could never run. The wait is bounded, so a wedged store delays the quit
+    /// briefly instead of hanging it.
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let quotaHistory = container?.quotaHistory, quotaHistory.hasPendingWrites else {
+            return .terminateNow
+        }
+        Task {
+            await quotaHistory.flushPendingWrites()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 }

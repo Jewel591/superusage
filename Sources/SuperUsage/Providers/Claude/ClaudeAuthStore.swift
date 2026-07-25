@@ -97,7 +97,18 @@ struct ClaudeCredentialGeneration: Equatable, Sendable {
 }
 
 struct ClaudeCredentialLoad: Sendable {
+    /// The credentials the refresh actually probes, in order — after the environment-token transform,
+    /// which can *narrow* the set (see `applyingEnvironmentToken`).
     var candidates: [ClaudeCredentialState]
+    /// Every login this home actually holds, before that narrowing — the set that decides *whose*
+    /// account a reading may be attributed to.
+    ///
+    /// The two differ because a login that can't read usage is still a login: with an ambient
+    /// `CLAUDE_CODE_OAUTH_TOKEN` exported, a stored login lacking the `user:profile` scope drops out of
+    /// `candidates` (it can't serve the usage call), yet it may be exactly the account `.claude.json`
+    /// names. Attributing on the narrowed set would let the *other* saved login's numbers be stamped
+    /// with that name. Attribution questions therefore ask this set; only the fetch asks `candidates`.
+    var attributionCandidates: [ClaudeCredentialState]
     var desktopStatus: ClaudeDesktopCredentialStatus
 }
 
@@ -243,11 +254,68 @@ struct ClaudeAuthStore: Sendable {
         }
 
         let candidates = applyingEnvironmentToken(to: stored)
-        return ClaudeCredentialLoad(candidates: candidates, desktopStatus: desktopStatus)
+        return ClaudeCredentialLoad(
+            candidates: candidates,
+            attributionCandidates: stored,
+            desktopStatus: desktopStatus
+        )
     }
 
     func loadCredentialCandidates() -> [ClaudeCredentialState] {
         loadCredentialSet().candidates
+    }
+
+    /// The account signed in at **this store's own** Claude home, or `nil` when nothing there names one.
+    ///
+    /// A Claude OAuth token carries no account claim, so unlike Codex the credential can't name itself.
+    /// What it can do is say which home it came from: a `.configDir` card reads only its own directory
+    /// and its own keychain item, and a `.standard` card reads only the default home's. So a stored
+    /// candidate winning the probe *is* evidence about this home, and this names the account that home
+    /// is logged into. Sources that aren't bound to *this* home prove nothing about it; excluding those
+    /// is the caller's job, via `isBoundToThisHome(_:)`, not this method's.
+    ///
+    /// Touches the disk, so callers run it off the main actor along with the credential load.
+    func homeAccountIdentityKey() -> String? {
+        let observer = DefaultAccountObserver(environment: environment, files: files, keychain: keychain)
+        let outcome: DefaultAccountObserver.Outcome
+        switch scope {
+        case .standard:
+            // Resolves `CLAUDE_CONFIG_DIR` the same way `credentialsPath()` does, and additionally
+            // refuses a comma-separated list, which names no single account to attribute to.
+            outcome = observer.observeClaude()
+        case .configDir(let path, _):
+            outcome = observer.observeClaude(configDirPath: path)
+        }
+        guard case .resolved(let identityKey, _, _) = outcome else { return nil }
+        return identityKey
+    }
+
+    /// Whether a credential that won the probe from `source` provably came out of **this store's own**
+    /// Claude home — the home `homeAccountIdentityKey()` names the account for. Only when both agree may
+    /// a snapshot be attributed to that account (`ProviderSnapshot.accountProof`).
+    ///
+    /// `.file` is bound by construction: `credentialsPath()` is this home's directory and nothing else.
+    ///
+    /// The keychain is bound only for **this home's own service name**, which is the *first* candidate
+    /// and never the rest. That distinction is the whole point of this method: a `.standard` store under
+    /// a `CLAUDE_CONFIG_DIR` override probes `["<base>-<hash(dir)>", "<base>"]`, so when the override's
+    /// own item is missing it falls back to the *bare default* item — a different home's login, which
+    /// keeps working (that fallback is deliberate, and predates history) but must never be stamped with
+    /// the override home's account. This is not a race: it is a stable state for anyone who exports
+    /// `CLAUDE_CONFIG_DIR` without having logged in under it.
+    ///
+    /// `.desktop` and `.environment` are bound to no home at all — Claude Desktop's is one system-wide
+    /// login shared by every Claude card (see `allowsDesktopFallback`), and `CLAUDE_CODE_OAUTH_TOKEN` is
+    /// whatever the launch environment happened to export.
+    func isBoundToThisHome(_ source: ClaudeCredentialState.Source) -> Bool {
+        switch source {
+        case .file:
+            return true
+        case .keychainCurrentUser(let service), .keychainLegacy(let service):
+            return service == keychainServiceCandidates().first
+        case .desktop, .environment:
+            return false
+        }
     }
 
     /// Whether this scoped card's login leaves any local footprint, checked without ever reading a
@@ -305,8 +373,13 @@ struct ClaudeAuthStore: Sendable {
         return expiresAt - now().timeIntervalSince1970 * 1000 <= 5 * 60 * 1000
     }
 
+    /// Built from `attributionCandidates`, not `candidates`: a login the environment transform filters
+    /// out of the probe order is still a login in this home, so it appearing or vanishing mid-refresh is
+    /// a credential change the refresh must notice.
     func credentialGeneration(forceDesktopFallback: Bool = false) -> ClaudeCredentialGeneration {
-        ClaudeCredentialGeneration(loadCredentialSet(forceDesktopFallback: forceDesktopFallback).candidates)
+        ClaudeCredentialGeneration(
+            loadCredentialSet(forceDesktopFallback: forceDesktopFallback).attributionCandidates
+        )
     }
 
     /// Save an OAuth rotation only if the ordered effective candidate set is unchanged. Checking the

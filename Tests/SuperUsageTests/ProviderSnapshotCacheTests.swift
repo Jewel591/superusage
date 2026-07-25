@@ -98,4 +98,24 @@ final class ProviderSnapshotCacheTests: XCTestCase {
         now = now.addingTimeInterval(101)
         XCTAssertNil(cache.snapshot(providerID: "alpha"))
     }
+
+    /// `accountProof` names the account behind the credential that fetched, and it is deliberately left
+    /// out of `ProviderSnapshot.CodingKeys` — so it never reaches this cache, the local HTTP API, or
+    /// CloudKit. Two things are pinned here, and a future field added to `CodingKeys` by reflex would
+    /// break both: the account identity is not written to disk, and a *decoded* snapshot is unprovable by
+    /// construction, which is correct — a cache entry restored at launch is not evidence about which
+    /// credential is on this machine now, and quota history must not treat it as any.
+    func testAccountProofIsNeverEncodedAndDecodesBackToNil() throws {
+        var proven = snapshot("alpha", used: 42, now: Date())
+        proven.accountProof = "acct-1|org-9"
+
+        let encoded = try JSONEncoder().encode(proven)
+        let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertFalse(json.contains("accountProof"))
+        XCTAssertFalse(json.contains("acct-1"), "not under any other key either")
+
+        let decoded = try JSONDecoder().decode(ProviderSnapshot.self, from: encoded)
+        XCTAssertNil(decoded.accountProof)
+        XCTAssertEqual(decoded.lines, proven.lines, "everything else still round-trips")
+    }
 }
