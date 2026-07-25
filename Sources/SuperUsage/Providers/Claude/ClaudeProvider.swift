@@ -33,6 +33,9 @@ final class ClaudeProvider: ProviderRuntime {
     /// us. Mirrors the legacy plugin's `cachedUsageData` + `rateLimitedUntilMs`.
     private var cachedCredentialFingerprint: Data?
     private var lastGoodUsage: ClaudeMappedUsage?
+    /// When `lastGoodUsage` was actually fetched, so a re-serve during the cooldown can say so rather
+    /// than pass a stale reading off as a new observation.
+    private var lastGoodUsageAt: Date?
     private var rateLimitedUntil: Date?
     private static let rateLimitCooldown: TimeInterval = 5 * 60
 
@@ -298,7 +301,8 @@ final class ClaudeProvider: ProviderRuntime {
             lines: mapped.lines,
             refreshedAt: now(),
             usageHistory: usageHistory,
-            warning: warning
+            warning: warning,
+            quotaObservedAt: mapped.observedAt
         )
     }
 
@@ -372,6 +376,7 @@ final class ClaudeProvider: ProviderRuntime {
 
         let mapped = try ClaudeUsageMapper.mapUsageResponse(response, credentials: working.oauth, now: now())
         lastGoodUsage = mapped
+        lastGoodUsageAt = now()
         rateLimitedUntil = nil
         return mapped
     }
@@ -386,6 +391,9 @@ final class ClaudeProvider: ProviderRuntime {
         }
         mapped.lines.append(ClaudeUsageMapper.rateLimitedNote(retryAfterSeconds: retryAfterSeconds))
         mapped.warning = ClaudeUsageMapper.rateLimitedWarning(retryAfterSeconds: retryAfterSeconds)
+        // These bars are the previous reading, not a new one. Carrying when they were actually taken is
+        // what keeps quota history from recording a cooldown as a flat, measured stretch.
+        mapped.observedAt = lastGoodUsageAt
         return mapped
     }
 
@@ -396,6 +404,7 @@ final class ClaudeProvider: ProviderRuntime {
         guard cachedCredentialFingerprint != fingerprint else { return }
         cachedCredentialFingerprint = fingerprint
         lastGoodUsage = nil
+        lastGoodUsageAt = nil
         rateLimitedUntil = nil
     }
 

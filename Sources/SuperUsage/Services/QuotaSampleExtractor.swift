@@ -13,8 +13,12 @@ enum QuotaSampleExtractor {
     ///   - snapshot: a *successful* snapshot. Error snapshots must never reach here — a failed refresh
     ///     has to leave a gap in the series, not a fabricated point (see `docs/quota-history.md`).
     ///   - descriptors: the provider's registry descriptors, which supply the stable metric ids.
-    ///   - capturedAt: the observation instant. Callers pass the snapshot's `refreshedAt` so the sample
-    ///     is stamped with when the data was actually fetched, not when it happened to be written.
+    ///   - capturedAt: the observation instant. Callers pass the snapshot's `quotaReadAt` — when the
+    ///     quota was actually *read*, which is the refresh time except when the provider re-served an
+    ///     earlier reading (Claude's rate-limit cooldown). Stamping such a re-serve with the refresh
+    ///     time would mint a new point every 5 minutes for a window nobody measured; stamping it with
+    ///     the real reading time makes it collide with the row already on record, so the store's
+    ///     uniqueness constraint absorbs it and the untouched stretch shows up as the gap it is.
     ///   - identityKey: the account signed in at this card right now, or `nil` when unresolved.
     static func samples(
         from snapshot: ProviderSnapshot,
@@ -33,7 +37,7 @@ enum QuotaSampleExtractor {
         let family = ProviderAccountID.family(of: snapshot.providerID)
         let isAccountAware = ProviderAccountID.families.contains(family)
         guard !isAccountAware || identityKey != nil else { return [] }
-        let accountDigest = identityKey.map(ProviderAccountID.hash8)
+        let accountDigest = identityKey.map(ProviderAccountID.identityDigest)
 
         return descriptors.compactMap { descriptor in
             guard let line = snapshot.line(label: descriptor.metricLabel),

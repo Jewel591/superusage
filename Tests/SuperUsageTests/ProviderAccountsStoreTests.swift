@@ -39,6 +39,27 @@ final class ProviderAccountsStoreTests: XCTestCase {
         XCTAssertTrue(records[0].sources.contains(where: \.holdsDefaultSource))
     }
 
+    /// Quota history stores accounts as an identity digest and never the key itself, so this lookup is
+    /// the only route back to a human name. It exists for the one case where two series sit under one
+    /// card id — before and after a sign-out at the default home — and the picker has to tell them apart.
+    func testAccountLabelResolvesFromAnIdentityDigest() {
+        let store = ProviderAccountsStore(defaults: makeScratchDefaults())
+        store.reconcile(with: [
+            defaultHomeObservation(family: "claude", identityKey: "acct-a", label: "a@example.com (Acme)")
+        ])
+
+        XCTAssertEqual(
+            store.accountLabel(identityDigest: ProviderAccountID.identityDigest("acct-a")),
+            "a@example.com (Acme)"
+        )
+        // A rename wins, the same as everywhere else a card is named.
+        store.rename(cardID: "claude", to: "Work")
+        XCTAssertEqual(store.accountLabel(identityDigest: ProviderAccountID.identityDigest("acct-a")), "Work")
+        // An account that is no longer on record can't be named — the caller falls back to the digest
+        // rather than guessing, which is what keeps a signed-out account's history visibly separate.
+        XCTAssertNil(store.accountLabel(identityDigest: ProviderAccountID.identityDigest("acct-gone")))
+    }
+
     func testSwappedDefaultMintsAHashIDAndTakesTheBadge() {
         let store = ProviderAccountsStore(defaults: makeScratchDefaults())
         store.reconcile(with: [defaultHomeObservation(family: "claude", identityKey: "acct-a")])

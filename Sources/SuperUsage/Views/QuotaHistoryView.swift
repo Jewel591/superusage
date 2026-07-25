@@ -40,14 +40,76 @@ struct QuotaHistoryView: View {
         scopes.first { $0.scopeKey == selectedScopeKey }
     }
 
-    private var providers: [Provider] {
-        var seen: Set<String> = []
-        return scopes.compactMap { seen.insert($0.providerID).inserted ? $0.provider : nil }
+    /// One entry in the first picker: a card as seen by one account.
+    private struct HistoryCard: Identifiable, Hashable {
+        /// `QuotaHistoryDisplayScope.cardKey`.
+        let id: String
+        let title: String
     }
 
-    private var metricsForSelectedProvider: [QuotaHistoryDisplayScope] {
-        guard let providerID = selectedScope?.providerID else { return [] }
-        return scopes.filter { $0.providerID == providerID }
+    /// The cards to offer, in the order their series were last active.
+    ///
+    /// The account is spelled out **only** when a card holds more than one account's history — which
+    /// happens after a sign-out and sign-in at a family's default home, since that card keeps the id
+    /// `claude` for life. Naming the account unconditionally would put "Claude — me@example.com" in front
+    /// of every single-account user for a distinction they don't have.
+    private var cards: [HistoryCard] {
+        var order: [String] = []
+        var firstScopeByCard: [String: QuotaHistoryDisplayScope] = [:]
+        var cardKeysByProvider: [String: Set<String>] = [:]
+        for scope in scopes {
+            if firstScopeByCard[scope.cardKey] == nil {
+                firstScopeByCard[scope.cardKey] = scope
+                order.append(scope.cardKey)
+            }
+            cardKeysByProvider[scope.providerID, default: []].insert(scope.cardKey)
+        }
+        return order.compactMap { key in
+            guard let scope = firstScopeByCard[key] else { return nil }
+            let base = container.displayName(for: scope.provider)
+            guard (cardKeysByProvider[scope.providerID]?.count ?? 0) > 1 else {
+                return HistoryCard(id: key, title: base)
+            }
+            return HistoryCard(id: key, title: "\(base) — \(accountLabel(for: scope))")
+        }
+    }
+
+    /// How to name the account behind a series once it has to be named.
+    ///
+    /// A signed-out account is gone from the registry, so its rows can only be identified by their
+    /// digest. Showing a truncated one is not a name, but it does say "this is somebody else" — which is
+    /// the whole point of labelling here, and is strictly better than two identical entries.
+    private func accountLabel(for scope: QuotaHistoryDisplayScope) -> String {
+        guard let digest = scope.accountDigest else { return "unattributed" }
+        guard let name = container.accounts.accountLabel(identityDigest: digest) else {
+            return "account \(digest.prefix(6))"
+        }
+        return Self.shortened(name)
+    }
+
+    /// The longest account name this picker will render. Past this it truncates.
+    private static let accountLabelLimit = 22
+
+    /// Squeezes an account name down to something a picker can hold: prefer the org out of our own
+    /// "email (Org Name)" label shape, then cap the length.
+    ///
+    /// Not cosmetic. The controls row is three fixed-size pickers, so an untruncated
+    /// "someone@example.com (Someone's Organization)" widens the first one until the range switcher is
+    /// pushed off the window and the chart is clipped — which is exactly what the full label did.
+    private static func shortened(_ label: String) -> String {
+        var name = label
+        if name.hasSuffix(")"), let open = name.lastIndex(of: "(") {
+            let org = name[name.index(after: open)..<name.index(before: name.endIndex)]
+                .trimmingCharacters(in: .whitespaces)
+            if !org.isEmpty { name = org }
+        }
+        guard name.count > accountLabelLimit else { return name }
+        return name.prefix(accountLabelLimit - 1).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    private var metricsForSelectedCard: [QuotaHistoryDisplayScope] {
+        guard let cardKey = selectedScope?.cardKey else { return [] }
+        return scopes.filter { $0.cardKey == cardKey }
     }
 
     // MARK: - Chrome
@@ -65,22 +127,22 @@ struct QuotaHistoryView: View {
     }
 
     private var providerPicker: some View {
-        Picker("Provider", selection: providerSelection) {
-            ForEach(providers) { provider in
-                Text(container.displayName(for: provider)).tag(provider.id)
+        Picker("Provider", selection: cardSelection) {
+            ForEach(cards) { card in
+                Text(card.title).tag(card.id)
             }
         }
         .labelsHidden()
         .fixedSize()
     }
 
-    /// Switching provider has to move the metric selection too — the previous metric belongs to the old
-    /// provider and would leave the chart showing a series the pickers no longer describe.
-    private var providerSelection: Binding<String> {
+    /// Switching card has to move the metric selection too — the previous metric belongs to the old card
+    /// and would leave the chart showing a series the pickers no longer describe.
+    private var cardSelection: Binding<String> {
         Binding(
-            get: { selectedScope?.providerID ?? providers.first?.id ?? "" },
-            set: { providerID in
-                selectedScopeKey = scopes.first { $0.providerID == providerID }?.scopeKey
+            get: { selectedScope?.cardKey ?? cards.first?.id ?? "" },
+            set: { cardKey in
+                selectedScopeKey = scopes.first { $0.cardKey == cardKey }?.scopeKey
             }
         )
     }
@@ -90,7 +152,7 @@ struct QuotaHistoryView: View {
             get: { selectedScopeKey ?? "" },
             set: { selectedScopeKey = $0 }
         )) {
-            ForEach(metricsForSelectedProvider) { scope in
+            ForEach(metricsForSelectedCard) { scope in
                 Text(scope.metricTitle).tag(scope.scopeKey)
             }
         }
@@ -147,8 +209,28 @@ struct QuotaHistoryView: View {
         }
     }
 
+    /// Says so when the selected card has stopped recording because its signed-in account changed under
+    /// a running app. Without this the chart just quietly stops growing, which reads as a bug.
+    @ViewBuilder
+    private var pausedNotice: some View {
+        if let providerID = selectedScope?.providerID,
+           container.quotaHistory.pausedCards.contains(providerID) {
+            Label(
+                "A different account is signed in to this provider now. Recording is paused until superUsage restarts, so this account's history stays its own.",
+                systemImage: "pause.circle"
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+    }
+
     private var chart: some View {
         VStack(alignment: .leading, spacing: 12) {
+            pausedNotice
             QuotaHistoryChart(
                 series: series,
                 kind: series.format.metricKind,

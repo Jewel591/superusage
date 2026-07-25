@@ -14,6 +14,11 @@ or beside your editor while you work. The window remembers its size and position
 Pick a provider, one of its metrics, and a range (**24h**, **7d**, **30d**). The chart plots how much of
 the window was **left** over time.
 
+When one provider holds history for more than one account — which happens after you sign out of one
+account and into another — the first picker names the account too, so you're never silently comparing
+someone else's usage to your own. An account that is no longer signed in anywhere is listed by a short
+id rather than a name, since there is nothing left on this Mac to look its name up in.
+
 Everything is drawn as a share of the window (0–100%), whatever the metric's own unit is, so a percent
 meter, a dollar balance, and a credit pool all read on one axis. The absolute figure isn't lost — point
 at the chart and the readout gives it in the metric's own unit, along with the time.
@@ -48,7 +53,10 @@ Some consequences worth knowing:
 - **Failed refreshes record nothing.** A failure leaves a gap on purpose — that's what makes "the quota
   stopped moving" distinguishable from "we stopped being able to look".
 - **A cached refresh records nothing.** When a refresh is served from cache, no new observation
-  happened, so no new point is invented.
+  happened, so no new point is invented. The same holds when a provider re-serves an earlier reading:
+  Claude's usage endpoint rate-limits often, and while it does, the dashboard keeps showing the last good
+  figures with a staleness note. Those figures are recorded under the time they were actually read, so
+  the cooldown shows up as the gap it is instead of a flat line through hours nobody measured.
 - **`superusage --force` records too.** A refresh driven from the command line is a real observation, so
   it lands in the same history the app writes. Without that, driving refreshes from the terminal would
   punch holes in the chart for refreshes that actually succeeded.
@@ -58,8 +66,11 @@ Some consequences worth knowing:
   that pass — a gap can be filled in later, but usage from two accounts merged into one line can't be
   separated afterwards. superUsage reads which account is signed in where **once per launch** (the same
   pass that decides which account cards exist at all), so if you swap accounts while it's running, quit
-  and reopen it — until you do, the whole app, history included, still attributes to the previous
-  account.
+  and reopen it — until you do, the whole app still attributes to the previous account. History is the
+  one exception that refuses to guess: before every write it re-checks who is signed in, and if that no
+  longer matches the account the app launched with, it **stops recording that provider until you
+  restart** and says so in the window. Everything else on screen corrects itself at the next launch; a
+  history row written under the wrong account never could.
 - **Metrics without a limit never appear.** Daily spend, token counts, and the Usage Trend chart are
   unbounded, so there's no "remaining" to plot. They stay on the dashboard.
 - **History starts when you update.** The chart fills in from the first refresh after this version is

@@ -715,6 +715,9 @@ final class ClaudeProviderTests: XCTestCase {
         let first = await provider.refresh()
         XCTAssertEqual(Self.progress(first.lines, "Session")?.used, 25)
         XCTAssertNil(first.warning)
+        // A live reading needs no provenance stamp: it was read at the refresh time.
+        XCTAssertNil(first.quotaObservedAt)
+        XCTAssertEqual(first.quotaReadAt, first.refreshedAt)
 
         // 2) 429: still shows the cached Session bar plus the staleness note, not a bare "Status" badge —
         // and the header warning flags the rate-limited state even when the note line isn't in the layout.
@@ -731,6 +734,15 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(Self.progress(third.lines, "Session")?.used, 25)
         XCTAssertEqual(third.warning?.hasPrefix("Updates blocked by Anthropic"), true)
         XCTAssertEqual(httpClient.requests.filter { $0.url.absoluteString.hasSuffix("/api/oauth/usage") }.count, 2)
+        // 4) The re-served bars carry the time they were actually read, not the time they were re-served.
+        // Without this the cooldown — which this endpoint enters routinely — mints a fresh history point
+        // every refresh interval for a window nobody measured, drawing a flat line through it. Stamped
+        // with the real reading time, the re-serve collides with the row already on record and the
+        // untouched stretch shows up as the gap it is.
+        XCTAssertEqual(second.quotaObservedAt, t0)
+        XCTAssertEqual(third.quotaObservedAt, t0)
+        XCTAssertEqual(third.quotaReadAt, t0)
+        XCTAssertEqual(third.refreshedAt, t0.addingTimeInterval(60))
     }
 
     func testRefreshSurfacesRequestFailureForNonOAuthRefreshErrorBody() async {

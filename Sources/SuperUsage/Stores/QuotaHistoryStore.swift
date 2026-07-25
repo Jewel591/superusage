@@ -153,6 +153,32 @@ actor QuotaHistoryStore {
         }
     }
 
+    /// The newest sample for one series strictly before `date`, or `nil` if the series starts inside the
+    /// window.
+    ///
+    /// The windowed read alone cannot tell "the series genuinely begins here" from "we are looking at the
+    /// middle of one": a reset or an outage straddling the left edge is only visible against the sample on
+    /// the other side of it. Over-reading a fixed extra span answers that only when the neighbour happens
+    /// to fall inside it — a Mac asleep for a day, or a provider that failed all night, has no sample
+    /// there at all, and the chart would then open claiming the range began at whatever the first
+    /// post-wake reading was. One descending fetch with `fetchLimit = 1` answers it exactly, and rides the
+    /// same `(scopeKey, capturedAt)` index the windowed read uses.
+    func sampleImmediatelyBefore(scopeKey: String, date: Date) async throws -> QuotaSample? {
+        guard loaded else { throw QuotaHistoryStoreError.storeNotLoaded }
+        let context = container.newBackgroundContext()
+        return try await context.perform {
+            let request = NSFetchRequest<NSManagedObject>(entityName: Field.entity)
+            request.predicate = NSPredicate(
+                format: "%K == %@ AND %K < %@",
+                Field.scopeKey, scopeKey,
+                Field.capturedAt, date as NSDate
+            )
+            request.sortDescriptors = [NSSortDescriptor(key: Field.capturedAt, ascending: false)]
+            request.fetchLimit = 1
+            return try context.fetch(request).compactMap(Self.sample(from:)).first
+        }
+    }
+
     /// The series that have at least one sample on record, newest activity first.
     func scopes() async throws -> [QuotaHistoryScope] {
         guard loaded else { throw QuotaHistoryStoreError.storeNotLoaded }
@@ -164,7 +190,9 @@ actor QuotaHistoryStore {
             // walks a lot of rows. `propertiesToFetch` + `.dictionaryResultType` keeps it to the three
             // columns that matter instead of faulting whole objects.
             request.resultType = .dictionaryResultType
-            request.propertiesToFetch = [Field.scopeKey, Field.providerID, Field.metricID, Field.capturedAt]
+            request.propertiesToFetch = [
+                Field.scopeKey, Field.providerID, Field.accountDigest, Field.metricID, Field.capturedAt
+            ]
             var seen: Set<String> = []
             var result: [QuotaHistoryScope] = []
             for row in try context.fetch(request) as [NSFetchRequestResult] {
@@ -179,6 +207,7 @@ actor QuotaHistoryStore {
                     QuotaHistoryScope(
                         scopeKey: scopeKey,
                         providerID: providerID,
+                        accountDigest: dictionary[Field.accountDigest] as? String,
                         metricID: metricID,
                         latestSample: capturedAt
                     )

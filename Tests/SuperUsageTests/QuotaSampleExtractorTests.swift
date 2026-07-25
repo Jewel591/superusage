@@ -9,7 +9,11 @@ final class QuotaSampleExtractorTests: XCTestCase {
     private let capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
     /// Claude is an account-first family, so every sample has to be attributable to an account.
     private let identityKey = "account-a"
-    private var accountScope: String { ProviderAccountID.make(family: "claude", identityKey: identityKey) }
+    /// The account half of a series key: the family plus the account's FULL identity digest — not the
+    /// truncated `hash8` a card id carries. Spelled out rather than borrowed from `QuotaSeriesKey` so a
+    /// change to the key format has to be made here too, deliberately: history is append-only, so a
+    /// silently reformatted key strands every row already on disk.
+    private var accountScope: String { "claude@\(ProviderAccountID.identityDigest(identityKey))" }
 
     private var sessionDescriptor: WidgetDescriptor {
         .percent(id: "claude.session", provider: provider, title: "Session")
@@ -163,9 +167,11 @@ final class QuotaSampleExtractorTests: XCTestCase {
         XCTAssertEqual(samples.first?.remainingFraction, 0)
     }
 
-    /// An extra account card already carries its own digest, so its key is unchanged by account scoping —
-    /// the id re-derives to itself.
-    func testAccountCardKeepsItsOwnCardIDAsScope() {
+    /// An extra account card already carries a digest in its id — but a truncated one the account
+    /// registry is free to salt on a collision. A series key has no arbiter, so it is rebuilt from the
+    /// full digest instead of reusing the card id: two salted cards must not be able to collide into one
+    /// permanent, unsplittable series.
+    func testAccountCardIsKeyedByItsFullDigestNotItsCardID() {
         let cardID = ProviderAccountID.make(family: "claude", identityKey: identityKey)
         let accountProvider = Provider(id: cardID, displayName: "Claude", icon: .providerMark("claude"))
         let descriptor = WidgetDescriptor.percent(id: "\(cardID).session", provider: accountProvider, title: "Session")
@@ -183,8 +189,11 @@ final class QuotaSampleExtractorTests: XCTestCase {
             identityKey: identityKey
         )
 
-        XCTAssertEqual(samples.first?.scopeKey, "\(cardID)|\(cardID).session")
-        XCTAssertEqual(QuotaSeriesKey.split("\(cardID)|\(cardID).session")?.accountScope, cardID)
+        XCTAssertEqual(samples.first?.scopeKey, "\(accountScope)|\(cardID).session")
+        XCTAssertEqual(samples.first?.accountDigest, ProviderAccountID.identityDigest(identityKey))
+        // The card id's own truncated digest is a prefix of the key's, never the whole of it.
+        XCTAssertNotEqual(accountScope, cardID)
+        XCTAssertTrue(accountScope.hasPrefix(cardID))
     }
 
     /// The one that matters: the account holding a family's *default home* keeps the bare `claude` card
@@ -218,8 +227,8 @@ final class QuotaSampleExtractorTests: XCTestCase {
         // attributable even if the key format ever changes.
         XCTAssertEqual(a?.providerID, "claude")
         XCTAssertEqual(b?.providerID, "claude")
-        XCTAssertEqual(a?.accountDigest, ProviderAccountID.hash8("account-a"))
-        XCTAssertEqual(b?.accountDigest, ProviderAccountID.hash8("account-b"))
+        XCTAssertEqual(a?.accountDigest, ProviderAccountID.identityDigest("account-a"))
+        XCTAssertEqual(b?.accountDigest, ProviderAccountID.identityDigest("account-b"))
     }
 
     /// An account-first card whose identity didn't resolve records nothing at all. A gap is recoverable;

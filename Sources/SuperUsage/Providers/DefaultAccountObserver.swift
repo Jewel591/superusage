@@ -81,7 +81,17 @@ struct DefaultAccountObserver: Sendable {
             }
             configDir = raw
         }
-        let anchor = expandTilde(configDir)
+        return observeClaude(configDirPath: configDir)
+    }
+
+    /// The account signed in at one specific Claude config dir.
+    ///
+    /// Split out from `observeClaude()` so a caller holding a card's own home (an extra account card is
+    /// pinned to its config dir) can ask about *that* home rather than whichever one the environment
+    /// currently points at — the two answer differently, and using the default home's answer for a
+    /// custom-dir card would attribute it to the wrong account.
+    func observeClaude(configDirPath: String) -> Outcome {
+        let anchor = expandTilde(configDirPath)
         // The identity file sits inside a custom config dir, but next to (not inside) the default
         // `~/.claude` — Claude Code keeps the default's state at `~/.claude.json`.
         let identityPath = anchor == expandTilde("~/.claude")

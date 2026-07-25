@@ -14,7 +14,8 @@ import SwiftUI
 ///   that looks like quota appearing from nowhere; instead each side is its own line and the boundary
 ///   gets a rule.
 /// - **Gaps.** No successful refresh means no observation. Interpolating across a sleeping Mac would
-///   invent a smooth burn that never happened, so segments simply stop and restart.
+///   invent a smooth burn that never happened, so segments simply stop and restart — and the untouched
+///   stretch is shaded, so "nothing was recorded here" reads differently from "the line is flat here".
 /// - **Intra-bucket movement.** The line follows each bucket's closing value; the band behind it shows
 ///   the spread that value hides, so a spike inside an hour is visible rather than silently flattened.
 struct QuotaHistoryChart: View {
@@ -29,6 +30,20 @@ struct QuotaHistoryChart: View {
 
     var body: some View {
         Chart {
+            // Drawn first so everything else sits on top of it. A break between two segments is only
+            // absence-shaped if you already know segments exist; shading the stretch says outright that
+            // nothing was recorded there, which is the difference between "usage held steady overnight"
+            // and "the Mac was asleep overnight".
+            ForEach(series.gaps, id: \.self) { gap in
+                RectangleMark(
+                    xStart: .value("Gap start", gap.start),
+                    xEnd: .value("Gap end", gap.end),
+                    yStart: .value("Bottom", 0),
+                    yEnd: .value("Top", 1)
+                )
+                .foregroundStyle(.secondary.opacity(0.09))
+            }
+
             ForEach(series.segments) { segment in
                 ForEach(segment.points) { point in
                     AreaMark(
@@ -199,9 +214,12 @@ struct QuotaHistoryChart: View {
         }
         let percent = latest.remainingFraction.formatted(.percent.precision(.fractionLength(0)))
         let resets = series.resets.isEmpty ? "" : " \(series.resets.count) reset(s) in range."
+        // The shaded bands carry no meaning to VoiceOver, so the count is spoken instead — otherwise a
+        // chart mostly made of silence sounds identical to one with continuous coverage.
+        let gaps = series.gaps.isEmpty ? "" : " \(series.gaps.count) gap(s) with no successful refresh."
         return """
         Remaining quota trend from \(timestampLabel(earliest.time)) to \(timestampLabel(latest.time)). \
-        \(percent) left.\(resets)
+        \(percent) left.\(resets)\(gaps)
         """
     }
 }

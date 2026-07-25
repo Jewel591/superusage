@@ -104,9 +104,24 @@ final class AppContainer {
         // pass can run. It opens its database lazily on the first sample, keeping launch off the disk.
         // The identity map is what keeps two accounts apart: card ids alone don't, because the account
         // holding a family's default home keeps the bare `claude`/`codex` id across a sign-out.
+        // The app runs for weeks, so the launch identity map can go stale under it — a sign-out and
+        // sign-in leaves the providers reading the NEW account's usage while the map still names the old
+        // one. Everywhere else that self-corrects at the next launch; history is append-only, so it gets
+        // a gate that stops recording instead. The one-shot CLI needs none: it resolves identity
+        // milliseconds before it fetches.
+        let identityGate = QuotaHistoryIdentityGate(
+            claudeConfigDirsByCard: accountAssembly.claudeCards.reduce(into: [:]) { map, card in
+                map[card.id] = card.configDirPath
+            }
+        )
         let quotaHistory = QuotaHistoryRecorder(
             registry: registry,
-            identityKeys: accountAssembly.identityKeysByCard
+            identityKeys: accountAssembly.identityKeysByCard,
+            // Off the main actor: the gate reads credential state off disk, and the recorder's write task
+            // runs on the main actor, where a stalled disk read would be a stalled UI.
+            verifyIdentity: { cardID in
+                await Task.detached(priority: .utility) { identityGate.liveIdentityKey(cardID: cardID) }.value
+            }
         )
         dataStore.onQuotaSnapshotRecorded = { [weak quotaHistory] snapshot in
             quotaHistory?.record(snapshot: snapshot)

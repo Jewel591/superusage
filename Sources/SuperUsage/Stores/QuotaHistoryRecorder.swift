@@ -20,9 +20,21 @@ final class QuotaHistoryRecorder {
     /// Fixed for the process, because that is what the account-first model guarantees: the identity
     /// pass runs once per launch (see `ProviderAccountAssembly`, "a mid-run swap is caught on the next
     /// launch"), and the card set, the provider catalog, and the cache's account stamps are all pinned
-    /// to it. Re-reading identity here alone would make history disagree with every other surface
-    /// during the window it's meant to fix. The bounded consequence is stated in `docs/quota-history.md`.
+    /// to it. History does not re-key itself mid-session — it would then be the only surface describing
+    /// the new account — but it does *verify* against the live account before writing, via
+    /// `verifyIdentity` below.
     private let identityKeys: [String: String]
+
+    /// Re-reads the account signed in at a card right now. `nil` means the caller is short-lived enough
+    /// that identity cannot drift under it — the one-shot CLI resolves identity milliseconds before it
+    /// fetches, so re-reading would only cost another pass over the same files. The app, which runs for
+    /// weeks, always passes one.
+    private let verifyIdentity: (@Sendable (String) async -> String?)?
+
+    /// Cards whose signed-in account no longer matches the one this process launched with. Recording is
+    /// suspended for these until relaunch, and the history window says so — otherwise the chart would
+    /// just stop growing with no stated reason.
+    private(set) var pausedCards: Set<String> = []
 
     /// Serializes "the store is open" across every caller: each operation awaits this one task instead
     /// of racing its own `load()`.
@@ -49,12 +61,14 @@ final class QuotaHistoryRecorder {
     init(
         registry: WidgetRegistry,
         identityKeys: [String: String] = [:],
+        verifyIdentity: (@Sendable (String) async -> String?)? = nil,
         store: QuotaHistoryStore = QuotaHistoryStore(),
         retentionWindow: TimeInterval = QuotaHistoryStore.retentionWindow,
         now: @escaping () -> Date = Date.init
     ) {
         self.registry = registry
         self.identityKeys = identityKeys
+        self.verifyIdentity = verifyIdentity
         self.store = store
         self.retentionWindow = retentionWindow
         self.now = now
@@ -65,25 +79,60 @@ final class QuotaHistoryRecorder {
     /// Fire-and-forget: the refresh path must not wait on a database write, and a write failure must
     /// not turn a good refresh into a failed one. Failures log loudly instead.
     func record(snapshot: ProviderSnapshot) {
+        let cardID = snapshot.providerID
         let samples = QuotaSampleExtractor.samples(
             from: snapshot,
-            descriptors: registry.descriptors(for: snapshot.providerID),
-            capturedAt: snapshot.refreshedAt,
-            identityKey: identityKeys[snapshot.providerID]
+            descriptors: registry.descriptors(for: cardID),
+            // The instant the quota was *read*, which is the refresh time unless the provider re-served
+            // an earlier reading. See `ProviderSnapshot.quotaObservedAt`.
+            capturedAt: snapshot.quotaReadAt,
+            identityKey: identityKeys[cardID]
         )
         guard !samples.isEmpty else { return }
         let id = UUID()
         pendingWrites[id] = Task { [weak self] in
             guard let self else { return }
+            defer { self.pendingWrites[id] = nil }
+            guard await self.identityStillMatches(cardID: cardID) else { return }
             do {
                 try await self.open()
                 try await self.store.record(samples)
-                AppLog.debug(.history, "recorded \(samples.count) samples for \(snapshot.providerID)")
+                AppLog.debug(.history, "recorded \(samples.count) samples for \(cardID)")
             } catch {
-                AppLog.error(.history, "sample write failed for \(snapshot.providerID): \(error.localizedDescription)")
+                AppLog.error(.history, "sample write failed for \(cardID): \(error.localizedDescription)")
             }
-            self.pendingWrites[id] = nil
         }
+    }
+
+    /// Whether the account signed in at `cardID` is still the one this process launched with.
+    ///
+    /// The check runs immediately before the write rather than at extraction time, so it reflects the
+    /// account as of the moment the sample would land. A mismatch — or an identity that can't be read at
+    /// all — drops the whole batch: history is append-only, and a row attributed to the wrong account
+    /// can never be identified, let alone corrected.
+    private func identityStillMatches(cardID: String) async -> Bool {
+        guard let verifyIdentity,
+              let launchIdentity = identityKeys[cardID],
+              ProviderAccountID.families.contains(ProviderAccountID.family(of: cardID))
+        else { return true }
+
+        let live = await verifyIdentity(cardID)
+        guard live == launchIdentity else {
+            // Logged once per card, not once per refresh: this state persists until relaunch, and a
+            // warning every 5 minutes for days would bury everything else in the log.
+            if pausedCards.insert(cardID).inserted {
+                AppLog.warn(
+                    .history,
+                    "\(cardID): signed-in account changed since launch (or can no longer be read); "
+                        + "history paused for this card until superUsage restarts"
+                )
+            }
+            return false
+        }
+        if pausedCards.remove(cardID) != nil {
+            AppLog.info(.history, "\(cardID): signed-in account matches the launch identity again; history resumed")
+        }
+        return true
     }
 
     /// Opens the store and runs retention, independent of whether anything is being written.
@@ -135,13 +184,17 @@ final class QuotaHistoryRecorder {
     /// The chartable series for one scope and range.
     func series(scopeKey: String, range: QuotaHistoryRange) async -> QuotaHistorySeries {
         let end = now()
-        // Read one bucket earlier than the range so the first bucket is complete and so a reset or gap
-        // straddling the left edge is detected from a real neighbouring sample instead of appearing as a
-        // series that simply starts there.
-        let start = end.addingTimeInterval(-(range.duration + range.bucket))
+        let start = end.addingTimeInterval(-range.duration)
         do {
             try await open()
-            let samples = try await store.samples(scopeKey: scopeKey, from: start, to: end)
+            var samples = try await store.samples(scopeKey: scopeKey, from: start, to: end)
+            // Splice on the newest sample from before the window, whenever it was taken. The aggregator
+            // needs exactly one such neighbour to judge the left edge (see `QuotaHistoryAggregator`); an
+            // arbitrary over-read of the range would supply it only when the neighbour happens to be
+            // recent, which is precisely not the case after a long sleep or outage.
+            if let previous = try await store.sampleImmediatelyBefore(scopeKey: scopeKey, date: start) {
+                samples.insert(previous, at: 0)
+            }
             failure = nil
             return QuotaHistoryAggregator.series(samples: samples, range: range, now: end)
         } catch {
@@ -202,10 +255,13 @@ final class QuotaHistoryRecorder {
     func pruneIfDue() async {
         let current = now()
         if let lastPruneAt, current.timeIntervalSince(lastPruneAt) < Self.pruneInterval { return }
-        lastPruneAt = current
         do {
             try await open()
             let deleted = try await store.prune(before: current.addingTimeInterval(-retentionWindow))
+            // Only a prune that actually ran counts. Stamping the attempt would let one transient store
+            // error (a locked Application Support directory at launch) silence retention for a further
+            // 24 hours, which is the app quietly keeping data past the window it promises.
+            lastPruneAt = current
             if deleted > 0 {
                 AppLog.info(.history, "pruned \(deleted) samples older than \(Int(retentionWindow / 86_400))d")
             }
@@ -224,4 +280,10 @@ struct QuotaHistoryDisplayScope: Hashable, Sendable, Identifiable {
     var id: String { scope.scopeKey }
     var scopeKey: String { scope.scopeKey }
     var providerID: String { scope.providerID }
+    var accountDigest: String? { scope.accountDigest }
+
+    /// The picker's first-level unit: a card **as seen by one account**. Two accounts that have both
+    /// held a family's default home share the card id `claude`, so grouping by `providerID` alone would
+    /// stack two people's series under one entry.
+    var cardKey: String { "\(scope.providerID)|\(scope.accountDigest ?? "")" }
 }

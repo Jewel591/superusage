@@ -235,6 +235,64 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(scopes.last?.latestSample, start.addingTimeInterval(5 * 60))
     }
 
+    /// The picker groups by account, not just by card — two accounts that have each held the default
+    /// home share the card id `claude`, and a picker showing both as plain "Claude / Session" would let a
+    /// user compare a stranger's usage to their own without being told. So the digest has to survive the
+    /// scope read, not just the sample read.
+    func testScopesCarryTheAccountBehindEachSeries() async throws {
+        try await store.record([
+            sample(scopeKey: "claude@aaaa|claude.session", accountDigest: "aaaa", minutesAfterStart: 0, used: 10),
+            sample(scopeKey: "claude@bbbb|claude.session", accountDigest: "bbbb", minutesAfterStart: 5, used: 20),
+            sample(
+                scopeKey: "grok|grok.weekly",
+                providerID: "grok",
+                accountDigest: nil,
+                metricID: "grok.weekly",
+                minutesAfterStart: 10,
+                used: 30
+            )
+        ])
+
+        let digests = try await store.scopes().reduce(into: [String: String?]()) { map, scope in
+            map[scope.scopeKey] = scope.accountDigest
+        }
+
+        XCTAssertEqual(digests["claude@aaaa|claude.session"], "aaaa")
+        XCTAssertEqual(digests["claude@bbbb|claude.session"], "bbbb")
+        // A provider with no account identity at all keeps a null digest rather than inventing one.
+        XCTAssertEqual(digests["grok|grok.weekly"], String?.none)
+    }
+
+    /// The chart's left edge is only interpretable against the sample on the other side of it, and that
+    /// sample can be arbitrarily old — a Mac asleep for two days has nothing in between. So the lookup is
+    /// "the newest one before this instant", not "anything within some extra span".
+    func testSampleImmediatelyBeforeFindsTheNearestEarlierSampleOnly() async throws {
+        try await store.record([
+            sample(minutesAfterStart: -4_000, used: 10),
+            sample(minutesAfterStart: -60, used: 20),
+            sample(minutesAfterStart: 30, used: 30),
+            sample(scopeKey: "codex|codex.weekly", providerID: "codex", metricID: "codex.weekly", minutesAfterStart: -5, used: 99)
+        ])
+
+        let previous = try await store.sampleImmediatelyBefore(scopeKey: "claude|claude.session", date: start)
+
+        XCTAssertEqual(previous?.used, 20)
+        XCTAssertEqual(previous?.capturedAt, start.addingTimeInterval(-60 * 60))
+    }
+
+    /// A series that genuinely begins inside the window has no neighbour, and must not borrow one from
+    /// another series.
+    func testSampleImmediatelyBeforeIsNilWhenTheSeriesStartsInTheWindow() async throws {
+        try await store.record([
+            sample(minutesAfterStart: 30, used: 30),
+            sample(scopeKey: "codex|codex.weekly", providerID: "codex", metricID: "codex.weekly", minutesAfterStart: -60, used: 99)
+        ])
+
+        let previous = try await store.sampleImmediatelyBefore(scopeKey: "claude|claude.session", date: start)
+
+        XCTAssertNil(previous)
+    }
+
     func testPruneDeletesOnlySamplesOlderThanTheCutoff() async throws {
         try await store.record([
             sample(minutesAfterStart: 0, used: 10),

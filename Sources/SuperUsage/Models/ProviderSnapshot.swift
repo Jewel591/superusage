@@ -23,6 +23,19 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
     /// Set only on error snapshots: a stable, non-PII bucket for the failure, read by telemetry on the
     /// failure path. Always `nil` on success (and error snapshots aren't cached), so it never persists.
     var errorCategory: ErrorCategory?
+    /// When the quota figures in `lines` were actually observed, when that differs from `refreshedAt`.
+    ///
+    /// A refresh can succeed while the quota numbers in it are *not* a new observation: Claude's usage
+    /// endpoint rate-limits often, and during the cooldown the provider deliberately serves its
+    /// last-good usage with a staleness note rather than blanking the dashboard. That snapshot is not an
+    /// error and its `refreshedAt` is now, so anything that treats "successful refresh" as "new reading"
+    /// would record the same values over and over — drawing a flat line through a window nobody
+    /// measured, and erasing the gap that should mark it.
+    ///
+    /// `nil` means the quota was read fresh this pass. Providers that re-serve a previous reading stamp
+    /// this with when that reading was actually taken; `QuotaSampleExtractor` records at *this* instant,
+    /// so a re-serve dedups against the row it already wrote instead of minting a new point.
+    var quotaObservedAt: Date?
 
     init(
         providerID: String,
@@ -32,7 +45,8 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
         refreshedAt: Date = Date(),
         usageHistory: ProviderUsageHistory? = nil,
         warning: String? = nil,
-        errorCategory: ErrorCategory? = nil
+        errorCategory: ErrorCategory? = nil,
+        quotaObservedAt: Date? = nil
     ) {
         self.providerID = providerID
         self.displayName = displayName
@@ -42,7 +56,12 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
         self.usageHistory = usageHistory
         self.warning = warning
         self.errorCategory = errorCategory
+        self.quotaObservedAt = quotaObservedAt
     }
+
+    /// The instant the quota figures in this snapshot were read — the real observation time, which is
+    /// the refresh time unless the provider re-served an earlier reading.
+    var quotaReadAt: Date { quotaObservedAt ?? refreshedAt }
 
     func line(label: String) -> MetricLine? {
         lines.first { $0.label == label }
@@ -57,7 +76,8 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
         lines: [MetricLine],
         refreshedAt: Date,
         usageHistory: ProviderUsageHistory? = nil,
-        warning: String? = nil
+        warning: String? = nil,
+        quotaObservedAt: Date? = nil
     ) -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: provider.id,
@@ -66,7 +86,8 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
             lines: lines,
             refreshedAt: refreshedAt,
             usageHistory: usageHistory,
-            warning: warning
+            warning: warning,
+            quotaObservedAt: quotaObservedAt
         )
     }
 

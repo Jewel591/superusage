@@ -36,22 +36,40 @@ final class QuotaHistoryRecorderTests: XCTestCase {
 
     private func makeRecorder(
         identityKeys: [String: String] = ["claude": "account-a"],
+        verifyIdentity: (@Sendable (String) async -> String?)? = nil,
+        store: QuotaHistoryStore? = nil,
         now: @escaping () -> Date = Date.init
     ) -> QuotaHistoryRecorder {
         QuotaHistoryRecorder(
             registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
             identityKeys: identityKeys,
-            store: store,
+            verifyIdentity: verifyIdentity,
+            store: store ?? self.store,
             now: now
         )
     }
 
-    private func snapshot(used: Double, at date: Date) -> ProviderSnapshot {
+    private func sample(used: Double, at date: Date) -> QuotaSample {
+        QuotaSample(
+            scopeKey: "claude|claude.session",
+            providerID: "claude",
+            accountDigest: "aaaaaaaa",
+            metricID: "claude.session",
+            capturedAt: date,
+            used: used,
+            limit: 100,
+            format: .percent,
+            resetsAt: nil
+        )
+    }
+
+    private func snapshot(used: Double, at date: Date, quotaObservedAt: Date? = nil) -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: "claude",
             displayName: "Claude",
             lines: [.progress(label: "Session", used: used, limit: 100, format: .percent)],
-            refreshedAt: date
+            refreshedAt: date,
+            quotaObservedAt: quotaObservedAt
         )
     }
 
@@ -75,12 +93,113 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertEqual(
             Set(scopes.map(\.scopeKey)),
             [
-                "\(ProviderAccountID.make(family: "claude", identityKey: "account-a"))|claude.session",
-                "\(ProviderAccountID.make(family: "claude", identityKey: "account-b"))|claude.session"
+                "claude@\(ProviderAccountID.identityDigest("account-a"))|claude.session",
+                "claude@\(ProviderAccountID.identityDigest("account-b"))|claude.session"
             ]
         )
         // Both rows still name the card they came from, so a swap is visible rather than inferred.
         XCTAssertEqual(Set(scopes.map(\.providerID)), ["claude"])
+    }
+
+    /// The launch identity map is fixed for the process, but the app runs for weeks — sign out and back
+    /// in mid-session and the providers start returning the NEW account's usage while the map still names
+    /// the old one. Every other surface self-corrects at the next launch; history is append-only, so a
+    /// row written under the wrong account is wrong forever. The batch is dropped instead.
+    func testMidSessionAccountSwapPausesRecordingInsteadOfMixingSeries() async throws {
+        let recorder = makeRecorder(
+            identityKeys: ["claude": "account-a"],
+            verifyIdentity: { _ in "account-b" }
+        )
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        let flushed = await recorder.flushPendingWrites()
+
+        XCTAssertTrue(flushed)
+        let count = try await store.sampleCount()
+        XCTAssertEqual(count, 0)
+        // And the window can say why the chart stopped growing, instead of just showing a stale line.
+        XCTAssertEqual(recorder.pausedCards, ["claude"])
+    }
+
+    /// An identity that can't be read at all is treated exactly like a different one. "We couldn't check"
+    /// is not permission to write a row that can never be un-written.
+    func testUnverifiableLiveIdentityAlsoPausesRecording() async throws {
+        let recorder = makeRecorder(
+            identityKeys: ["claude": "account-a"],
+            verifyIdentity: { _ in nil }
+        )
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        _ = await recorder.flushPendingWrites()
+
+        let count = try await store.sampleCount()
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(recorder.pausedCards, ["claude"])
+    }
+
+    /// The gate must be invisible in the normal case — the account signed in is the one we launched with.
+    func testMatchingLiveIdentityRecordsNormally() async throws {
+        let recorder = makeRecorder(
+            identityKeys: ["claude": "account-a"],
+            verifyIdentity: { _ in "account-a" }
+        )
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        _ = await recorder.flushPendingWrites()
+
+        let count = try await store.sampleCount()
+        XCTAssertEqual(count, 1)
+        XCTAssertTrue(recorder.pausedCards.isEmpty)
+    }
+
+    /// Claude's usage endpoint rate-limits routinely, and during the cooldown the provider re-serves its
+    /// last-good reading on a perfectly successful, non-error snapshot. Recording that at the refresh
+    /// time would mint a new point every five minutes for hours nobody measured — a flat line where the
+    /// truth is a gap. Stamped with the instant the quota was actually read, the re-serve lands on the
+    /// row already on record and the store's uniqueness constraint absorbs it.
+    func testReServedQuotaReadingDoesNotMintANewPoint() async throws {
+        let recorder = makeRecorder()
+
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        _ = await recorder.flushPendingWrites()
+        // Same reading, re-served five and ten minutes later while the cooldown holds.
+        recorder.record(snapshot: snapshot(
+            used: 40,
+            at: capturedAt.addingTimeInterval(300),
+            quotaObservedAt: capturedAt
+        ))
+        recorder.record(snapshot: snapshot(
+            used: 40,
+            at: capturedAt.addingTimeInterval(600),
+            quotaObservedAt: capturedAt
+        ))
+        _ = await recorder.flushPendingWrites()
+
+        let count = try await store.sampleCount()
+        XCTAssertEqual(count, 1)
+    }
+
+    /// The left edge of a chart is only interpretable against the sample on the other side of it — and
+    /// that sample can be arbitrarily old, because a Mac that slept for two days has nothing in between.
+    /// Reading a fixed span past the window would find it only when it happens to be recent, so a woken
+    /// Mac would open on a chart that silently claims the range began at its first post-wake reading.
+    func testSeriesFindsTheNeighbourBeforeTheWindowHoweverOldItIs() async throws {
+        let now = capturedAt
+        // Nearly drained three days ago, nearly full again twelve minutes ago: the window rolled over
+        // during the silence, and only the out-of-window sample can prove it.
+        try await store.record([
+            sample(used: 90, at: now.addingTimeInterval(-3 * 24 * 60 * 60)),
+            sample(used: 5, at: now.addingTimeInterval(-12 * 60)),
+            sample(used: 8, at: now.addingTimeInterval(-7 * 60))
+        ])
+        let recorder = makeRecorder(now: { now })
+
+        let series = await recorder.series(scopeKey: "claude|claude.session", range: .day)
+
+        XCTAssertEqual(series.resets, [now.addingTimeInterval(-12 * 60)])
+        XCTAssertEqual(series.gaps.count, 1)
+        XCTAssertEqual(series.gaps.first?.start, now.addingTimeInterval(-24 * 60 * 60))
+        XCTAssertEqual(series.gaps.first?.end, now.addingTimeInterval(-12 * 60))
     }
 
     /// Retention deliberately does not hang off the write path. The user whose data most needs to age
@@ -141,6 +260,43 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         await recorder.pruneIfDue()
         count = try await store.sampleCount()
         XCTAssertEqual(count, 0, "a day later it runs")
+    }
+
+    /// A prune that *failed* must not count as a prune. Stamping the attempt would let one transient
+    /// error — an Application Support directory briefly unavailable at launch, which is exactly when the
+    /// first prune runs — silence retention for another 24 hours, i.e. the app quietly keeping data past
+    /// the window it promises.
+    func testFailedPruneDoesNotCountAsHavingPruned() async throws {
+        // A file where the store's directory needs to be: `load()` fails until it's removed.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quota-history-blocked-\(UUID().uuidString)", isDirectory: true)
+        let blocked = directory.appendingPathComponent("store", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data().write(to: blocked)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let blockedStore = QuotaHistoryStore(
+            configuration: .init(name: "blocked", storeURL: blocked.appendingPathComponent("blocked.sqlite"))
+        )
+        var clock = capturedAt
+        let recorder = makeRecorder(store: blockedStore, now: { clock })
+
+        await recorder.pruneIfDue()
+        XCTAssertNotNil(recorder.failure, "the store could not be opened, so nothing was pruned")
+
+        // Clear the blockage and put an expired row in place.
+        try FileManager.default.removeItem(at: blocked)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        try await blockedStore.load()
+        try await blockedStore.record([sample(used: 10, at: capturedAt.addingTimeInterval(-40 * 24 * 60 * 60))])
+
+        // A minute later — far inside the daily interval. It must still run, because the first attempt
+        // never actually pruned anything.
+        clock = capturedAt.addingTimeInterval(60)
+        await recorder.pruneIfDue()
+
+        let remaining = try await blockedStore.sampleCount()
+        XCTAssertEqual(remaining, 0)
     }
 
     /// The quit hook waits for in-flight writes so a quit right after a refresh doesn't punch a hole in

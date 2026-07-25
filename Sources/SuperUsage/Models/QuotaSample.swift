@@ -20,8 +20,12 @@ struct QuotaSample: Hashable, Sendable {
     /// a card still called `claude` after a sign-out and sign-in is a *different* account. That is what
     /// `accountDigest` is for.
     let providerID: String
-    /// `hash8` of the identity key that produced the sample, or `nil` for providers with no account
-    /// identity at all (Grok, Copilot, …).
+    /// The full `ProviderAccountID.identityDigest` of the account that produced the sample, or `nil`
+    /// for providers with no account identity at all (Grok, Copilot, …).
+    ///
+    /// The whole hash rather than the `hash8` card ids use: a card id that collides gets salted by the
+    /// account registry, but a history key is derived independently and history is append-only, so a
+    /// collision here would merge two accounts permanently.
     ///
     /// Stored in its own column rather than only folded into `scopeKey`: history is append-only, so if
     /// the key format ever changes, rows still carry enough to be re-attributed instead of being
@@ -60,8 +64,10 @@ enum QuotaSeriesKey {
     /// swap at that home starts a new series instead of appending a second account's usage onto the
     /// first one's line. Falls back to the bare card id for providers with no account identity.
     ///
-    /// For an extra account card this is already the card's own id (`claude@ab12cd34` re-derives to
-    /// itself), so existing series keep their key.
+    /// Deliberately **not** the card id, even for an extra account card whose id already carries a
+    /// digest: card ids use a truncated hash the registry may have salted, so two cards can share a
+    /// digest-derived name only because the registry arbitrated it. A series key has no arbiter, so it
+    /// is always rebuilt from the full digest.
     static func accountScope(providerID: String, accountDigest: String?) -> String {
         guard let accountDigest else { return providerID }
         return "\(ProviderAccountID.family(of: providerID))@\(accountDigest)"
@@ -84,6 +90,12 @@ enum QuotaSeriesKey {
 struct QuotaHistoryScope: Hashable, Sendable, Identifiable {
     let scopeKey: String
     let providerID: String
+    /// The account behind the series, `nil` for providers with no account identity. Carried up to the
+    /// picker because `providerID` alone can name two accounts across time: history recorded before and
+    /// after a sign-out at a family's default home is two series under the one card id, and a picker
+    /// that showed both as plain "Claude / Session" would let the user compare a stranger's usage to
+    /// their own without ever being told.
+    let accountDigest: String?
     let metricID: String
     /// The newest sample's timestamp, so the picker can order by recency and mark dormant series.
     let latestSample: Date
