@@ -36,17 +36,20 @@ the tests prove one version and users get another. Nothing syncs them automatica
 swift ecosystem only understands the SwiftPM manifest, so its bumps move the first file alone. The
 `Lockfiles agree` CI job fails the PR when they drift apart, including when one has gone missing.
 
-After any dependency change, resolve both and commit both:
+After any dependency change, resolve both, then `git add` both:
 
 ```bash
 swift package resolve
 xcodebuild -project superUsage.xcodeproj -scheme superUsage -resolvePackageDependencies
 ```
 
-⚠️ On macOS, `xcodebuild -resolvePackageDependencies` writes the Xcode lockfile and then **deletes it
-again** a moment later, so `git status` reports a deletion of a file you did not touch. Don't commit
-that deletion — `git checkout -- <path>` restores it. To capture a genuinely updated one, copy it out
-while the resolve runs, then stage the copy:
+⚠️ If the Xcode lockfile **disappears** right after that resolve — `git status` showing a deletion of
+a file you never touched — you've hit a state where `xcodebuild` removes the file moments after
+writing it. It is not universal (a clean checkout resolves normally), but it reproduces persistently
+in some working copies, and it is why this file has been committed as a deletion before. Never commit
+that deletion: `git checkout -- <path>` puts it back. When the resolve genuinely changed it, copy it
+out while the resolve is running and stage the copy directly, since the working-tree file won't
+survive long enough for `git add`:
 
 ```bash
 git hash-object -w /path/to/copy | xargs -I{} git update-index --add --cacheinfo 100644,{},\

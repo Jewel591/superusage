@@ -34,10 +34,16 @@ def pins(path: Path) -> dict[str, tuple[str, str]]:
         # release builds freshly, against whatever version happens to be newest that day.
         sys.exit(f"missing lockfile: {path.relative_to(ROOT)}")
     data = json.loads(path.read_text())
-    return {
+    resolved = {
         pin["identity"]: (pin["state"].get("version", ""), pin["state"].get("revision", ""))
         for pin in data.get("pins", [])
     }
+    if not resolved:
+        # A pinless file is valid JSON and would otherwise pass, because comparing shared identities of
+        # an empty set finds nothing to disagree about. It pins nothing, which is the same exposure as
+        # having no file at all: this project always has dependencies to pin.
+        sys.exit(f"lockfile pins nothing: {path.relative_to(ROOT)}")
+    return resolved
 
 
 def main() -> int:
