@@ -22,6 +22,47 @@ Because `SuperUsage` dynamically links Sparkle, the app target explicitly embeds
 `Sparkle.framework`. A post-build verification script fails the build if that runtime dependency is
 missing or has an invalid signature.
 
+## Dependency lockfiles (there are two)
+
+The same three remote packages are pinned twice, because two build paths resolve them independently:
+
+| File | Governs |
+| --- | --- |
+| `Package.resolved` | `swift build`, `swift test`, and the CI test job |
+| `superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` | Xcode locally and Xcode Cloud release builds |
+
+Both are committed, and they must pin the same set of dependencies at the same version and revision —
+otherwise the tests prove one version and users get another. Nothing syncs them automatically:
+Dependabot's swift ecosystem only understands the SwiftPM manifest, so its bumps move the first file
+alone. The `Lockfiles agree` CI job fails the PR on any disagreement: a version or revision that
+differs, a dependency pinned in one file and not the other, a file that pins nothing, or a file that
+has gone missing.
+
+After any dependency change, resolve both, then `git add` both:
+
+```bash
+swift package resolve
+xcodebuild -project superUsage.xcodeproj -scheme superUsage -resolvePackageDependencies
+```
+
+⚠️ If the Xcode lockfile **disappears** right after that resolve — `git status` showing a deletion of
+a file you never touched — you've hit a state where `xcodebuild` removes the file moments after
+writing it. It is not universal (a clean checkout resolves normally), but it reproduces persistently
+in some working copies, and it is why this file has been committed as a deletion before. Never commit
+that deletion: `git checkout -- <path>` puts it back. When the resolve genuinely changed it, copy it
+out while the resolve is running and stage the copy directly, since the working-tree file won't
+survive long enough for `git add`:
+
+```bash
+LOCK=superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+git hash-object -w /path/to/copy | xargs -I{} git update-index --add --cacheinfo 100644,{},"$LOCK"
+git checkout -- "$LOCK"   # index now holds the new content; put it back in the working tree too
+```
+
+Don't skip that last line. `update-index` alone stages the new content while the working tree still
+shows the file as deleted (`git status` reports `MD`), and the next `git add -A` would quietly stage
+the deletion back over your update.
+
 ## Fixed Apple identity
 
 - Team: Chengdu Weisen Quwan Technology Co., Ltd (`C554753V8P`)

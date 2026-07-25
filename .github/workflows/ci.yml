@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  lockfiles:
+    name: Lockfiles agree
+    # Two resolved files pin the same three dependencies for two different build paths: the root
+    # `Package.resolved` governs `swift build` / `swift test`, and the one under the Xcode project
+    # governs Xcode and Xcode Cloud (the project declares its own remote packages — see project.yml).
+    # Nothing updates them together: Dependabot's swift ecosystem only knows the SwiftPM one, so a bump
+    # moves that file alone and the shipped app quietly keeps linking the version nobody just tested.
+    # This job is the tripwire for that. Seconds on ubuntu, so it isn't the macOS test cost the
+    # no-CI-tests rule is about.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare resolved dependency pins
+        run: python3 .github/scripts/check_lockfiles.py
+
   check:
     name: Build and Test
     # Builds against the macOS 26 SDK with the package's macOS 15 deployment target (Package.swift
