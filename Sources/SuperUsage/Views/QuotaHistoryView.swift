@@ -23,6 +23,10 @@ struct QuotaHistoryView: View {
         VStack(alignment: .leading, spacing: 0) {
             controls
             Divider()
+            // Above `content`, not inside its chart branch: a card that stopped recording the moment it
+            // was selected has an empty range to show, and "Nothing in This Range" with no stated reason
+            // is precisely the silence this notice exists to break.
+            pausedNotice
             content
         }
         .frame(minWidth: 560, minHeight: 400)
@@ -209,14 +213,14 @@ struct QuotaHistoryView: View {
         }
     }
 
-    /// Says so when the selected card has stopped recording because its signed-in account changed under
-    /// a running app. Without this the chart just quietly stops growing, which reads as a bug.
+    /// Says so when the selected card has stopped recording because its refreshes are coming back from
+    /// a different account. Without this the chart just quietly stops growing, which reads as a bug.
     @ViewBuilder
     private var pausedNotice: some View {
         if let providerID = selectedScope?.providerID,
            container.quotaHistory.pausedCards.contains(providerID) {
             Label(
-                "A different account is signed in to this provider now. Recording is paused until superUsage restarts, so this account's history stays its own.",
+                "This provider's refreshes are coming back from a different account than the one superUsage started with, so recording is paused and this account's history stays its own. It resumes when the original account signs back in — or right away if you quit and reopen superUsage.",
                 systemImage: "pause.circle"
             )
             .font(.system(size: 11))
@@ -225,12 +229,13 @@ struct QuotaHistoryView: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
         }
     }
 
     private var chart: some View {
         VStack(alignment: .leading, spacing: 12) {
-            pausedNotice
             QuotaHistoryChart(
                 series: series,
                 kind: series.format.metricKind,

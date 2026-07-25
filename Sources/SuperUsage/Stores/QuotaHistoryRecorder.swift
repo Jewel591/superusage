@@ -21,19 +21,13 @@ final class QuotaHistoryRecorder {
     /// pass runs once per launch (see `ProviderAccountAssembly`, "a mid-run swap is caught on the next
     /// launch"), and the card set, the provider catalog, and the cache's account stamps are all pinned
     /// to it. History does not re-key itself mid-session — it would then be the only surface describing
-    /// the new account — but it does *verify* against the live account before writing, via
-    /// `verifyIdentity` below.
+    /// the new account. What it does instead is refuse to write anything the producing credential
+    /// doesn't prove belongs to this account; see `isProven`.
     private let identityKeys: [String: String]
 
-    /// Re-reads the account signed in at a card right now. `nil` means the caller is short-lived enough
-    /// that identity cannot drift under it — the one-shot CLI resolves identity milliseconds before it
-    /// fetches, so re-reading would only cost another pass over the same files. The app, which runs for
-    /// weeks, always passes one.
-    private let verifyIdentity: (@Sendable (String) async -> String?)?
-
-    /// Cards whose signed-in account no longer matches the one this process launched with. Recording is
-    /// suspended for these until relaunch, and the history window says so — otherwise the chart would
-    /// just stop growing with no stated reason.
+    /// Cards whose refreshes are currently coming back from a different account than the one this
+    /// process launched with. Recording is suspended for these, and the history window says so —
+    /// otherwise the chart would just stop growing with no stated reason.
     private(set) var pausedCards: Set<String> = []
 
     /// Serializes "the store is open" across every caller: each operation awaits this one task instead
@@ -61,14 +55,12 @@ final class QuotaHistoryRecorder {
     init(
         registry: WidgetRegistry,
         identityKeys: [String: String] = [:],
-        verifyIdentity: (@Sendable (String) async -> String?)? = nil,
         store: QuotaHistoryStore = QuotaHistoryStore(),
         retentionWindow: TimeInterval = QuotaHistoryStore.retentionWindow,
         now: @escaping () -> Date = Date.init
     ) {
         self.registry = registry
         self.identityKeys = identityKeys
-        self.verifyIdentity = verifyIdentity
         self.store = store
         self.retentionWindow = retentionWindow
         self.now = now
@@ -88,12 +80,15 @@ final class QuotaHistoryRecorder {
             capturedAt: snapshot.quotaReadAt,
             identityKey: identityKeys[cardID]
         )
-        guard !samples.isEmpty else { return }
+        // After extraction, not before: a snapshot with nothing to record — an error badge, a provider
+        // with no capped metrics, a card whose launch identity never resolved — has no attribution
+        // question to answer, and running the proof check on it would park a card in `pausedCards` (and
+        // tell the user recording is paused) over a refresh that was never going to write a row.
+        guard !samples.isEmpty, isProven(snapshot) else { return }
         let id = UUID()
         pendingWrites[id] = Task { [weak self] in
             guard let self else { return }
             defer { self.pendingWrites[id] = nil }
-            guard await self.identityStillMatches(cardID: cardID) else { return }
             do {
                 try await self.open()
                 try await self.store.record(samples)
@@ -104,33 +99,43 @@ final class QuotaHistoryRecorder {
         }
     }
 
-    /// Whether the account signed in at `cardID` is still the one this process launched with.
+    /// Whether this snapshot's own credential proves it belongs to the account the card is keyed by.
     ///
-    /// The check runs immediately before the write rather than at extraction time, so it reflects the
-    /// account as of the moment the sample would land. A mismatch — or an identity that can't be read at
-    /// all — drops the whole batch: history is append-only, and a row attributed to the wrong account
-    /// can never be identified, let alone corrected.
-    private func identityStillMatches(cardID: String) async -> Bool {
-        guard let verifyIdentity,
-              let launchIdentity = identityKeys[cardID],
-              ProviderAccountID.families.contains(ProviderAccountID.family(of: cardID))
-        else { return true }
-
-        let live = await verifyIdentity(cardID)
-        guard live == launchIdentity else {
-            // Logged once per card, not once per refresh: this state persists until relaunch, and a
+    /// The launch identity map says which account is signed in where; `accountProof` says which account
+    /// actually produced *these numbers*. Those are the same answer right up until they aren't — the
+    /// providers walk credential fallback chains (Codex: each `auth.json`, then the keychain; Claude:
+    /// keychain, file, then possibly the system-wide Desktop login), and a sign-out and sign-in under a
+    /// running app moves the live credential without moving the launch map. Only the proof may key a
+    /// row, so a snapshot that can't produce one — a Desktop-backed fetch, an ambient env token, a
+    /// credential naming no account — is dropped whole.
+    ///
+    /// Dropping is deliberately the *conservative* outcome and not a data loss worth trading away: a
+    /// gap can be filled in by the next refresh, or by relaunching so the identity pass re-runs. Two
+    /// accounts spliced into one append-only line cannot be separated afterwards, ever.
+    ///
+    /// Providers outside the account-aware families have no account identity to prove and are waved
+    /// through here; `QuotaSampleExtractor` keys their series by card id alone.
+    private func isProven(_ snapshot: ProviderSnapshot) -> Bool {
+        let cardID = snapshot.providerID
+        guard ProviderAccountID.families.contains(ProviderAccountID.family(of: cardID)) else { return true }
+        guard let launchIdentity = identityKeys[cardID], snapshot.accountProof == launchIdentity else {
+            // Logged once per card rather than once per refresh: a swapped account stays swapped, and a
             // warning every 5 minutes for days would bury everything else in the log.
             if pausedCards.insert(cardID).inserted {
                 AppLog.warn(
                     .history,
-                    "\(cardID): signed-in account changed since launch (or can no longer be read); "
-                        + "history paused for this card until superUsage restarts"
+                    "\(cardID): this refresh came from a different account than the one superUsage "
+                        + "launched with (or from a credential that can't name its account); "
+                        + "history paused for this card"
                 )
             }
             return false
         }
+        // Recording resumes on its own if the proven account comes back — signing out and back in, or a
+        // Desktop-backed pass followed by a normal one. Nothing is at risk in resuming: every single
+        // write is checked against this same proof, so a resumed card is writing rows it has proven.
         if pausedCards.remove(cardID) != nil {
-            AppLog.info(.history, "\(cardID): signed-in account matches the launch identity again; history resumed")
+            AppLog.info(.history, "\(cardID): refreshes are the launch account's again; history resumed")
         }
         return true
     }

@@ -67,10 +67,13 @@ Some consequences worth knowing:
   separated afterwards. superUsage reads which account is signed in where **once per launch** (the same
   pass that decides which account cards exist at all), so if you swap accounts while it's running, quit
   and reopen it — until you do, the whole app still attributes to the previous account. History is the
-  one exception that refuses to guess: before every write it re-checks who is signed in, and if that no
-  longer matches the account the app launched with, it **stops recording that provider until you
-  restart** and says so in the window. Everything else on screen corrects itself at the next launch; a
-  history row written under the wrong account never could.
+  one exception that refuses to guess: every refresh has to show which account the login it actually used
+  belongs to, and a refresh that shows a different account than the app launched with — or that can't
+  show one at all, which is what a Claude Desktop login looks like, since that one login is shared by
+  every Claude card — is **not recorded**, and the window says so. Recording picks up again by itself
+  once the refreshes are the launch account's again, and a relaunch resolves it either way. Everything
+  else on screen corrects itself at the next launch; a history row written under the wrong account never
+  could.
 - **Metrics without a limit never appear.** Daily spend, token counts, and the Usage Trend chart are
   unbounded, so there's no "remaining" to plot. They stay on the dashboard.
 - **History starts when you update.** The chart fills in from the first refresh after this version is

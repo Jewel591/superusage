@@ -22,6 +22,25 @@ struct ClaudeCredentialState: Hashable, Sendable {
         case desktop
         case environment
 
+        /// Whether a credential from this source belongs, by construction, to the Claude home the store
+        /// that loaded it is scoped to.
+        ///
+        /// The three stored sources do: a `.configDir` store reads only its own directory and its own
+        /// hashed keychain item, a `.standard` store only the default home's. The other two do not —
+        /// Claude Desktop's is one system-wide login that "could belong to any of them" (see
+        /// `allowsDesktopFallback`), and `CLAUDE_CODE_OAUTH_TOKEN` is whatever the launch environment
+        /// happened to export.
+        ///
+        /// A Claude OAuth token carries no account claim, so this is the only thing that can tie a
+        /// snapshot back to an account — which is what quota history requires before it will write an
+        /// append-only row. See `ProviderSnapshot.accountProof`.
+        var isBoundToItsHome: Bool {
+            switch self {
+            case .file, .keychainCurrentUser, .keychainLegacy: true
+            case .desktop, .environment: false
+            }
+        }
+
         /// Log-safe source kind — NEVER the keychain service name or any token.
         var label: String {
             switch self {
@@ -248,6 +267,32 @@ struct ClaudeAuthStore: Sendable {
 
     func loadCredentialCandidates() -> [ClaudeCredentialState] {
         loadCredentialSet().candidates
+    }
+
+    /// The account signed in at **this store's own** Claude home, or `nil` when nothing there names one.
+    ///
+    /// A Claude OAuth token carries no account claim, so unlike Codex the credential can't name itself.
+    /// What it can do is say which home it came from: a `.configDir` card reads only its own directory
+    /// and its own keychain item, and a `.standard` card reads only the default home's. So a stored
+    /// candidate winning the probe *is* evidence about this home, and this names the account that home
+    /// is logged into. Sources that aren't bound to a home — Claude Desktop's login and an ambient
+    /// `CLAUDE_CODE_OAUTH_TOKEN` — prove nothing about it; excluding those is the caller's job, via
+    /// `ClaudeCredentialState.Source.isBoundToItsHome`, not this method's.
+    ///
+    /// Touches the disk, so callers run it off the main actor along with the credential load.
+    func homeAccountIdentityKey() -> String? {
+        let observer = DefaultAccountObserver(environment: environment, files: files, keychain: keychain)
+        let outcome: DefaultAccountObserver.Outcome
+        switch scope {
+        case .standard:
+            // Resolves `CLAUDE_CONFIG_DIR` the same way `credentialsPath()` does, and additionally
+            // refuses a comma-separated list, which names no single account to attribute to.
+            outcome = observer.observeClaude()
+        case .configDir(let path, _):
+            outcome = observer.observeClaude(configDirPath: path)
+        }
+        guard case .resolved(let identityKey, _, _) = outcome else { return nil }
+        return identityKey
     }
 
     /// Whether this scoped card's login leaves any local footprint, checked without ever reading a

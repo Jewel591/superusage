@@ -36,14 +36,12 @@ final class QuotaHistoryRecorderTests: XCTestCase {
 
     private func makeRecorder(
         identityKeys: [String: String] = ["claude": "account-a"],
-        verifyIdentity: (@Sendable (String) async -> String?)? = nil,
         store: QuotaHistoryStore? = nil,
         now: @escaping () -> Date = Date.init
     ) -> QuotaHistoryRecorder {
         QuotaHistoryRecorder(
             registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
             identityKeys: identityKeys,
-            verifyIdentity: verifyIdentity,
             store: store ?? self.store,
             now: now
         )
@@ -63,13 +61,21 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         )
     }
 
-    private func snapshot(used: Double, at date: Date, quotaObservedAt: Date? = nil) -> ProviderSnapshot {
+    /// `accountProof` defaults to the account the recorder is launched with, i.e. the ordinary case:
+    /// the credential that fetched belongs to the account the card is keyed by.
+    private func snapshot(
+        used: Double,
+        at date: Date,
+        quotaObservedAt: Date? = nil,
+        accountProof: String? = "account-a"
+    ) -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: "claude",
             displayName: "Claude",
             lines: [.progress(label: "Session", used: used, limit: 100, format: .percent)],
             refreshedAt: date,
-            quotaObservedAt: quotaObservedAt
+            quotaObservedAt: quotaObservedAt,
+            accountProof: accountProof
         )
     }
 
@@ -84,7 +90,11 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertTrue(flushed)
 
         let afterSwap = makeRecorder(identityKeys: ["claude": "account-b"])
-        afterSwap.record(snapshot: snapshot(used: 5, at: capturedAt.addingTimeInterval(300)))
+        afterSwap.record(snapshot: snapshot(
+            used: 5,
+            at: capturedAt.addingTimeInterval(300),
+            accountProof: "account-b"
+        ))
         flushed = await afterSwap.flushPendingWrites()
         XCTAssertTrue(flushed)
 
@@ -105,13 +115,10 @@ final class QuotaHistoryRecorderTests: XCTestCase {
     /// in mid-session and the providers start returning the NEW account's usage while the map still names
     /// the old one. Every other surface self-corrects at the next launch; history is append-only, so a
     /// row written under the wrong account is wrong forever. The batch is dropped instead.
-    func testMidSessionAccountSwapPausesRecordingInsteadOfMixingSeries() async throws {
-        let recorder = makeRecorder(
-            identityKeys: ["claude": "account-a"],
-            verifyIdentity: { _ in "account-b" }
-        )
+    func testSnapshotFromAnotherAccountPausesRecordingInsteadOfMixingSeries() async throws {
+        let recorder = makeRecorder(identityKeys: ["claude": "account-a"])
 
-        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: "account-b"))
         let flushed = await recorder.flushPendingWrites()
 
         XCTAssertTrue(flushed)
@@ -121,15 +128,14 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.pausedCards, ["claude"])
     }
 
-    /// An identity that can't be read at all is treated exactly like a different one. "We couldn't check"
-    /// is not permission to write a row that can never be un-written.
-    func testUnverifiableLiveIdentityAlsoPausesRecording() async throws {
-        let recorder = makeRecorder(
-            identityKeys: ["claude": "account-a"],
-            verifyIdentity: { _ in nil }
-        )
+    /// A snapshot whose credential can't name its account is treated exactly like one from a different
+    /// account. This is the Claude Desktop / ambient-token case: those logins are not bound to this
+    /// card's home, so "we couldn't tell" is what the provider reports — and it is not permission to
+    /// write a row that can never be un-written.
+    func testSnapshotThatCannotProveItsAccountAlsoPausesRecording() async throws {
+        let recorder = makeRecorder(identityKeys: ["claude": "account-a"])
 
-        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: nil))
         _ = await recorder.flushPendingWrites()
 
         let count = try await store.sampleCount()
@@ -137,18 +143,46 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.pausedCards, ["claude"])
     }
 
-    /// The gate must be invisible in the normal case — the account signed in is the one we launched with.
-    func testMatchingLiveIdentityRecordsNormally() async throws {
-        let recorder = makeRecorder(
-            identityKeys: ["claude": "account-a"],
-            verifyIdentity: { _ in "account-a" }
-        )
+    /// The check must be invisible in the normal case — the credential that fetched belongs to the
+    /// account the card is keyed by — and a card must un-pause once that is true again. Every write is
+    /// proof-checked individually, so resuming can only ever write rows that have been proven; making
+    /// the pause stick until relaunch would drop provably-correct samples for no gain.
+    func testProvenSnapshotRecordsAndResumesAPausedCard() async throws {
+        let recorder = makeRecorder(identityKeys: ["claude": "account-a"])
 
-        recorder.record(snapshot: snapshot(used: 40, at: capturedAt))
+        recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: "account-b"))
+        _ = await recorder.flushPendingWrites()
+        XCTAssertEqual(recorder.pausedCards, ["claude"])
+
+        recorder.record(snapshot: snapshot(used: 42, at: capturedAt.addingTimeInterval(300)))
         _ = await recorder.flushPendingWrites()
 
         let count = try await store.sampleCount()
         XCTAssertEqual(count, 1)
+        XCTAssertTrue(recorder.pausedCards.isEmpty)
+    }
+
+    /// Providers outside the account-aware families have no account to prove. They must record normally
+    /// rather than be gated into permanent silence by a check that can never pass for them.
+    func testProviderWithoutAnAccountIdentityRecordsWithoutProof() async throws {
+        let grok = Provider(id: "grok", displayName: "Grok", icon: .providerMark("grok"))
+        let descriptor = WidgetDescriptor.percent(id: "grok.session", provider: grok, title: "Session")
+        let recorder = QuotaHistoryRecorder(
+            registry: WidgetRegistry(providers: [grok], descriptors: [descriptor]),
+            identityKeys: [:],
+            store: store
+        )
+
+        recorder.record(snapshot: ProviderSnapshot(
+            providerID: "grok",
+            displayName: "Grok",
+            lines: [.progress(label: "Session", used: 40, limit: 100, format: .percent)],
+            refreshedAt: capturedAt
+        ))
+        _ = await recorder.flushPendingWrites()
+
+        let scopes = try await store.scopes()
+        XCTAssertEqual(scopes.map(\.scopeKey), ["grok|grok.session"])
         XCTAssertTrue(recorder.pausedCards.isEmpty)
     }
 
@@ -337,6 +371,9 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertFalse(recorder.hasPendingWrites)
         let count = try await store.sampleCount()
         XCTAssertEqual(count, 0)
+        // An error snapshot carries no proof either, but it isn't an attribution problem — telling the
+        // user recording is paused because the provider is failing would name the wrong cause.
+        XCTAssertTrue(recorder.pausedCards.isEmpty)
     }
 
     /// An account-first card with no resolved identity records nothing at all. The alternative — writing
@@ -350,5 +387,6 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertFalse(recorder.hasPendingWrites)
         let count = try await store.sampleCount()
         XCTAssertEqual(count, 0)
+        XCTAssertTrue(recorder.pausedCards.isEmpty, "nothing was ever recorded for this card to pause")
     }
 }

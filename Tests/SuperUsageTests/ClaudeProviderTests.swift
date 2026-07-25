@@ -208,6 +208,46 @@ final class ClaudeAuthStoreTests: XCTestCase {
         // break keychain candidate resolution.
         XCTAssertEqual(store.keychainServiceCandidates(), ["Claude Code-custom-oauth-credentials"])
     }
+
+    /// Which credential sources can be attributed to a card's own account, and which can't. This is the
+    /// whole basis of `ProviderSnapshot.accountProof` for Claude: a token carries no account claim, so
+    /// only a credential that came from *this card's own home* can be tied to the account signed in
+    /// there. Desktop's login is one system-wide login shared by every Claude card, and an ambient
+    /// `CLAUDE_CODE_OAUTH_TOKEN` is whatever the launch environment exported — attributing either would
+    /// be a guess, written into a history that can never be corrected.
+    func testOnlyHomeBoundCredentialSourcesCanBeAttributedToAnAccount() {
+        XCTAssertTrue(ClaudeCredentialState.Source.file.isBoundToItsHome)
+        XCTAssertTrue(ClaudeCredentialState.Source.keychainCurrentUser(service: "svc").isBoundToItsHome)
+        XCTAssertTrue(ClaudeCredentialState.Source.keychainLegacy(service: "svc").isBoundToItsHome)
+        XCTAssertFalse(ClaudeCredentialState.Source.desktop.isBoundToItsHome)
+        XCTAssertFalse(ClaudeCredentialState.Source.environment.isBoundToItsHome)
+    }
+
+    /// A scoped card must name the account at *its own* config dir, never the default home's — that
+    /// answer belongs to a different card and a different person's usage.
+    func testHomeAccountIdentityKeyReadsTheStoresOwnHome() {
+        let files = FakeFiles([
+            "/Users/dev/.claude.json": #"{"oauthAccount":{"accountUuid":"DEFAULT-ACCT"}}"#,
+            "/tmp/work/.claude.json": #"{"oauthAccount":{"accountUuid":"WORK-ACCT","organizationUuid":"WORK-ORG"}}"#
+        ])
+
+        let scoped = ClaudeAuthStore(
+            environment: FakeEnvironment([:]),
+            files: files,
+            keychain: FakeKeychain(),
+            scope: .configDir(path: "/tmp/work", keychainLiteral: "/tmp/work")
+        )
+        XCTAssertEqual(scoped.homeAccountIdentityKey(), "work-acct|work-org")
+
+        // And a home with nothing naming an account stays unattributable rather than borrowing one.
+        let empty = ClaudeAuthStore(
+            environment: FakeEnvironment([:]),
+            files: files,
+            keychain: FakeKeychain(),
+            scope: .configDir(path: "/tmp/empty", keychainLiteral: "/tmp/empty")
+        )
+        XCTAssertNil(empty.homeAccountIdentityKey())
+    }
 }
 
 final class ClaudeUsageMapperTests: XCTestCase {
@@ -715,9 +755,12 @@ final class ClaudeProviderTests: XCTestCase {
         let first = await provider.refresh()
         XCTAssertEqual(Self.progress(first.lines, "Session")?.used, 25)
         XCTAssertNil(first.warning)
-        // A live reading needs no provenance stamp: it was read at the refresh time.
-        XCTAssertNil(first.quotaObservedAt)
-        XCTAssertEqual(first.quotaReadAt, first.refreshedAt)
+        // The live reading is stamped with when it was read, exactly as the re-serve below will be.
+        // These two must be the *same* instant or the first re-serve doesn't collide with the row this
+        // pass wrote — in production `refreshedAt` is taken later than the read (after the pricing and
+        // log scans), so leaving a fresh reading unstamped would put the two minutes apart.
+        XCTAssertEqual(first.quotaObservedAt, t0)
+        XCTAssertEqual(first.quotaReadAt, t0)
 
         // 2) 429: still shows the cached Session bar plus the staleness note, not a bare "Status" badge —
         // and the header warning flags the rate-limited state even when the note line isn't in the layout.
@@ -743,6 +786,9 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(third.quotaObservedAt, t0)
         XCTAssertEqual(third.quotaReadAt, t0)
         XCTAssertEqual(third.refreshedAt, t0.addingTimeInterval(60))
+        // All three passes therefore claim the same reading instant, which is what makes the cooldown
+        // one row in history rather than one row per refresh.
+        XCTAssertEqual(Set([first, second, third].map(\.quotaReadAt)), [t0])
     }
 
     func testRefreshSurfacesRequestFailureForNonOAuthRefreshErrorBody() async {
@@ -783,6 +829,67 @@ final class ClaudeProviderTests: XCTestCase {
             return nil
         }
         return value
+    }
+
+    /// A Claude OAuth token names no account, so what ties a snapshot to one is the home its credential
+    /// came from — this card reads only its own. Quota history compares this against the account the app
+    /// launched with before it will write an append-only row, so it must be spelled exactly the way
+    /// `DefaultAccountObserver` spells it, org UUID and all (one human's personal Max org and company
+    /// Team org are different usage pools under one account UUID).
+    func testSnapshotIsStampedWithTheAccountItsOwnHomeIsSignedInTo() async {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+                files: FakeFiles([
+                    "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"pro","scopes":["user:profile"]}}"#,
+                    "/tmp/claude/.claude.json": #"{"oauthAccount":{"accountUuid":"ACCT-1","organizationUuid":"ORG-9","emailAddress":"a@example.com"}}"#
+                ]),
+                keychain: FakeKeychain(),
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: FakeHTTPClient(response: HTTPResponse(
+                statusCode: 200,
+                headers: [:],
+                body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+            ))),
+            logUsageScanner: ClaudeLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(snapshot.accountProof, "acct-1|org-9")
+    }
+
+    /// A home that names no account can't attribute the reading that came out of it. History has to drop
+    /// the batch rather than file it under whoever the app launched with — a gap can be filled in later,
+    /// two accounts on one append-only line cannot be separated ever.
+    func testSnapshotFromAHomeThatNamesNoAccountCarriesNoProof() async {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment(["CLAUDE_CONFIG_DIR": "/tmp/claude"]),
+                files: FakeFiles([
+                    "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"pro","scopes":["user:profile"]}}"#
+                ]),
+                keychain: FakeKeychain(),
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: FakeHTTPClient(response: HTTPResponse(
+                statusCode: 200,
+                headers: [:],
+                body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+            ))),
+            logUsageScanner: ClaudeLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(snapshot.accountProof)
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {

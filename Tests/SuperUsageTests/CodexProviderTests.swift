@@ -722,6 +722,70 @@ final class CodexProviderTests: XCTestCase {
         })
     }
 
+    /// Quota history is append-only, so it writes a row only when the snapshot can prove which account
+    /// produced it. `refresh()` walks a candidate chain — each `auth.json`, then the keychain — so
+    /// "which account is signed in" and "which account produced this" diverge exactly when the first
+    /// candidate fails. The proof therefore has to come off the credential that actually fetched, and
+    /// through the same formula the launch-time observer uses, or the two would never compare equal.
+    func testSnapshotIsStampedWithTheAccountOfTheCredentialThatFetched() async throws {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T08:00:00.000Z")!
+        let firstHome = #"{"tokens":{"access_token":"stale","account_id":"ACCT-STALE"}}"#
+        let secondHome = #"{"tokens":{"access_token":"good","account_id":"ACCT-LIVE"}}"#
+        // The first candidate 401s with no refresh token to recover with, so the loop falls through to
+        // the second home — whose account is the one that actually answered.
+        let httpClient = RoutingHTTPClient { request in
+            request.headers["Authorization"] == "Bearer good"
+                ? HTTPResponse(statusCode: 200, headers: [:], body: Data("{}".utf8))
+                : HTTPResponse(statusCode: 401, headers: [:], body: Data())
+        }
+        let provider = CodexProvider(
+            authStore: CodexAuthStore(
+                environment: FakeEnvironment([:]),
+                files: FakeFiles([
+                    "~/.config/codex/auth.json": firstHome,
+                    "~/.codex/auth.json": secondHome
+                ]),
+                keychain: FakeKeychain()
+            ),
+            usageClient: CodexUsageClient(http: httpClient),
+            logUsageScanner: CodexLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(snapshot.accountProof, "acct-live", "the account that fetched, not the one on top")
+        XCTAssertEqual(
+            snapshot.accountProof,
+            DefaultAccountObserver.codexIdentityKey(CodexAuthStore.parseAuth(secondHome)!),
+            "same spelling the launch identity uses, or the recorder's equality check can never pass"
+        )
+    }
+
+    /// A credential that names no account can't be attributed, and an unattributable reading must not
+    /// reach an append-only history under the launch account's key.
+    func testSnapshotFromACredentialThatNamesNoAccountCarriesNoProof() async throws {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T08:00:00.000Z")!
+        let provider = CodexProvider(
+            authStore: CodexAuthStore(
+                environment: FakeEnvironment(["CODEX_HOME": "/tmp/codex-home"]),
+                files: FakeFiles(["/tmp/codex-home/auth.json": #"{"tokens":{"access_token":"token"}}"#]),
+                keychain: FakeKeychain()
+            ),
+            usageClient: CodexUsageClient(http: FakeHTTPClient(
+                response: HTTPResponse(statusCode: 200, headers: [:], body: Data("{}".utf8))
+            )),
+            logUsageScanner: CodexLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(snapshot.accountProof)
+    }
+
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
         guard case .values(_, let values, _, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil

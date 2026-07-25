@@ -106,10 +106,17 @@ final class ClaudeProvider: ProviderRuntime {
         previousFallbackError: ClaudeAuthError?
     ) async -> ProviderSnapshot {
         let allowDesktopInteraction = ProviderRefreshContext.isManual
-        let credentialLoad = await loadOffMainActor { [authStore] in
-            authStore.loadCredentialSet(
-                allowDesktopInteraction: allowDesktopInteraction,
-                forceDesktopFallback: forceDesktopFallback
+        // Both disk reads ride one hop off the main actor. The home's account is read here, next to the
+        // credentials it belongs with, rather than after the fetch: read later it would describe a home
+        // that could have been re-logged-in during the request, and `probe` would attribute this
+        // reading to whoever signed in while it was in flight.
+        let (credentialLoad, homeAccount) = await loadOffMainActor { [authStore] in
+            (
+                authStore.loadCredentialSet(
+                    allowDesktopInteraction: allowDesktopInteraction,
+                    forceDesktopFallback: forceDesktopFallback
+                ),
+                authStore.homeAccountIdentityKey()
             )
         }
         let storedCandidates = credentialLoad.candidates
@@ -190,7 +197,8 @@ final class ClaudeProvider: ProviderRuntime {
                 let snapshot = try await probe(
                     state: state,
                     credentialGeneration: &credentialGeneration,
-                    fallbackWarning: desktopFallbackWarning
+                    fallbackWarning: desktopFallbackWarning,
+                    homeAccount: homeAccount
                 )
                 AppLog.info(LogTag.plugin("claude"), "refresh end (\(Int(Date().timeIntervalSince(start) * 1000))ms)")
                 return snapshot
@@ -229,7 +237,8 @@ final class ClaudeProvider: ProviderRuntime {
     private func probe(
         state initialState: ClaudeCredentialState,
         credentialGeneration: inout ClaudeCredentialGeneration,
-        fallbackWarning: String?
+        fallbackWarning: String?,
+        homeAccount: String?
     ) async throws -> ProviderSnapshot {
         var state = initialState
         var mapped = ClaudeMappedUsage(
@@ -302,7 +311,13 @@ final class ClaudeProvider: ProviderRuntime {
             refreshedAt: now(),
             usageHistory: usageHistory,
             warning: warning,
-            quotaObservedAt: mapped.observedAt
+            quotaObservedAt: mapped.observedAt,
+            // Whose account these numbers are. A Claude token names no account, so what proves it is the
+            // credential's *home*: this card reads only its own home, so a credential that came from
+            // there belongs to the account that home is signed in to. A credential that came from
+            // anywhere else — Claude Desktop's system-wide login, an ambient env token — proves nothing
+            // and leaves this `nil`, which quota history reads as "do not write".
+            accountProof: state.source.isBoundToItsHome ? homeAccount : nil
         )
     }
 
@@ -374,9 +389,16 @@ final class ClaudeProvider: ProviderRuntime {
             return rateLimitedSnapshot(credentials: working.oauth, retryAfterSeconds: retryAfterSeconds)
         }
 
-        let mapped = try ClaudeUsageMapper.mapUsageResponse(response, credentials: working.oauth, now: now())
+        var mapped = try ClaudeUsageMapper.mapUsageResponse(response, credentials: working.oauth, now: now())
+        let observedAt = now()
+        // Stamp the fresh reading with the same instant the cooldown re-serve will stamp it with. One
+        // `now()` for both, and specifically *this* one: `probe` takes its own `now()` for `refreshedAt`
+        // after the pricing and log scans, so leaving this reading unstamped would date it minutes later
+        // than the re-serve dates it. The first re-serve would then miss the row it is meant to collide
+        // with and mint a second point for a reading taken once. See `ProviderSnapshot.quotaObservedAt`.
+        mapped.observedAt = observedAt
         lastGoodUsage = mapped
-        lastGoodUsageAt = now()
+        lastGoodUsageAt = observedAt
         rateLimitedUntil = nil
         return mapped
     }

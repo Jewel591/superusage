@@ -105,25 +105,14 @@ final class AppContainer {
         // needs it, which in practice is the maintenance loop's opening prune rather than the first
         // sample, and that happens on the store's own actor rather than during launch.
         // The identity map is what keeps two accounts apart: card ids alone don't, because the account
-        // holding a family's default home keeps the bare `claude`/`codex` id across a sign-out.
-        // The app runs for weeks, so the launch identity map can go stale under it — a sign-out and
-        // sign-in leaves the providers reading the NEW account's usage while the map still names the old
-        // one. Everywhere else that self-corrects at the next launch; history is append-only, so it gets
-        // a gate that stops recording instead. The one-shot CLI needs none: it resolves identity
-        // milliseconds before it fetches.
-        let identityGate = QuotaHistoryIdentityGate(
-            claudeConfigDirsByCard: accountAssembly.claudeCards.reduce(into: [:]) { map, card in
-                map[card.id] = card.configDirPath
-            }
-        )
+        // holding a family's default home keeps the bare `claude`/`codex` id across a sign-out. It is
+        // only half the answer, though — the app runs for weeks, so a sign-out and sign-in leaves the
+        // providers reading the NEW account's usage while this map still names the old one. The other
+        // half rides on each snapshot (`ProviderSnapshot.accountProof`): the recorder writes only what
+        // the producing credential proves belongs to the account named here.
         let quotaHistory = QuotaHistoryRecorder(
             registry: registry,
-            identityKeys: accountAssembly.identityKeysByCard,
-            // Off the main actor: the gate reads credential state off disk, and the recorder's write task
-            // runs on the main actor, where a stalled disk read would be a stalled UI.
-            verifyIdentity: { cardID in
-                await Task.detached(priority: .utility) { identityGate.liveIdentityKey(cardID: cardID) }.value
-            }
+            identityKeys: accountAssembly.identityKeysByCard
         )
         dataStore.onQuotaSnapshotRecorded = { [weak quotaHistory] snapshot in
             quotaHistory?.record(snapshot: snapshot)

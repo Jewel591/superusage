@@ -207,7 +207,6 @@
 		BA226CE8BFEE0120DDFFCEFB /* CustomizeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0393E0172897CEB77A2E3E40 /* CustomizeRow.swift */; };
 		BA4934706372E58FE54E1BE9 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 32704D7792AD44A1219E5639 /* Sparkle */; };
 		BAC4613914AA9CB4D47F5350 /* LocalLimitsAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFDBB80436C8EC86BAB35D6 /* LocalLimitsAPI.swift */; };
-		BAFBAA02D74B100F61CE99B7 /* QuotaHistoryIdentityGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 992091121AE1D258045BEAD0 /* QuotaHistoryIdentityGate.swift */; };
 		BD21BFD3B0A2C73A73A4B37C /* ClosureMenuItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77EDD38D6094217D45222F3E /* ClosureMenuItem.swift */; };
 		BD722FA4CCF766BA58547230 /* WidgetRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA85335784A4807F4FDF18D /* WidgetRowView.swift */; };
 		BED982015B820A631B22754D /* LogFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E06A4E0219B6A0BCC3540B /* LogFile.swift */; };
@@ -450,7 +449,6 @@
 		962B2D1F4F6D2714DD796F15 /* PiPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPaths.swift; sourceTree = "<group>"; };
 		9775DD3D1FFF32C8E31E6A0C /* WidgetRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetRegistry.swift; sourceTree = "<group>"; };
 		98225770C41386C3B6452F3B /* MetricPeriod.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricPeriod.swift; sourceTree = "<group>"; };
-		992091121AE1D258045BEAD0 /* QuotaHistoryIdentityGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaHistoryIdentityGate.swift; sourceTree = "<group>"; };
 		9B78154578C09C0E4687BC6F /* AppleDeviceSyncSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleDeviceSyncSettingsSection.swift; sourceTree = "<group>"; };
 		9CA39CC7E47FFEAE7F287F5C /* MenuBarStripRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStripRenderer.swift; sourceTree = "<group>"; };
 		9CE5C511492CD22CA7DD5C94 /* CloudKitCoreDataSnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudKitCoreDataSnapshotStore.swift; sourceTree = "<group>"; };
@@ -1006,7 +1004,6 @@
 				F09A728D2830EB4F6A2BEC12 /* ProviderAccountAssembly.swift */,
 				5A874C40399F607FB95F55B3 /* ProxyConfig.swift */,
 				0906305B975C97609AEE6BEA /* QuotaHistoryAggregator.swift */,
-				992091121AE1D258045BEAD0 /* QuotaHistoryIdentityGate.swift */,
 				8F502FB614BCBA7AD0C8C12A /* QuotaSampleExtractor.swift */,
 				6F07F8D1CDC09DFAC330FA9D /* ScreenCaptureProbe.swift */,
 				116EB1B2B24FAA1C913BC65B /* ShellEnvironmentSnapshot.swift */,
@@ -1401,7 +1398,6 @@
 				1895920FFCD160276B183F2E /* ProxyConfig.swift in Sources */,
 				30DEE9F6124C15DF4D8BE3A1 /* QuotaHistoryAggregator.swift in Sources */,
 				C512EA2C91A9755216F07646 /* QuotaHistoryChart.swift in Sources */,
-				BAFBAA02D74B100F61CE99B7 /* QuotaHistoryIdentityGate.swift in Sources */,
 				0A47CC4A59235056D0F83D98 /* QuotaHistoryRecorder.swift in Sources */,
 				80DC22DD718B402E8717D925 /* QuotaHistoryStore.swift in Sources */,
 				807ED9AE164B51E1A442DD97 /* QuotaHistoryView.swift in Sources */,
