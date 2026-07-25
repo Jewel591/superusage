@@ -89,9 +89,12 @@ Some consequences worth knowing:
   re-login writes to the keychain or to `~/.claude/.credentials.json` depending on version and can leave
   the other behind. superUsage reads the keychain first, so if that leftover still works, the numbers
   that come back are its account's while the home names the newer one. Nothing about the home looks wrong
-  in that state, which is exactly why it isn't guessed at: while two working logins sit in one home,
-  refreshes are recorded for neither. Once one of them stops being accepted — the normal end of a
-  leftover login — the survivor is the home's only login again and recording resumes on its own.
+  in that state, which is exactly why it isn't guessed at: while two different logins sit in one home,
+  refreshes are recorded for neither, and the window says so. Age isn't used to pick a winner — an old
+  token is not the same thing as another account's, and superUsage has no way to tell which of the two
+  the home's name belongs to. Once one of them is actually rejected — the normal end of a leftover login
+  — the survivor is the home's only login and recording resumes on its own. Deleting the one you don't
+  use (`~/.claude/.credentials.json`, if you sign in with the CLI) resolves it immediately.
 
   A card that has no account at all — a Codex login held in the keychain is the usual way this happens —
   records nothing, and since it never records, it never appears in the picker either. The window names it
