@@ -137,6 +137,31 @@ final class QuotaHistoryAggregatorTests: XCTestCase {
         XCTAssertEqual(series.segments.count, 1)
     }
 
+    /// A reset inside a single bucket puts both sides in the same bucket. If points were stamped with
+    /// the bucket's start instead of their closing sample's time, the post-reset point would be drawn
+    /// *to the left of* the reset rule that caused it — the chart would show the refill happening before
+    /// the boundary.
+    func testResetInsideOneBucketKeepsBothSidesOnTheCorrectSideOfTheRule() {
+        let samples = [
+            sample(minutesAfterStart: 0, used: 80),
+            sample(minutesAfterStart: 5, used: 95),
+            sample(minutesAfterStart: 10, used: 5)
+        ]
+
+        let series = QuotaHistoryAggregator.series(samples: samples, range: .day, now: now(minutesAfterStart: 12))
+
+        // All three land in the same 15-minute bucket, but the reset splits them into two segments.
+        let resetAt = start.addingTimeInterval(10 * 60)
+        XCTAssertEqual(series.resets, [resetAt])
+        XCTAssertEqual(series.segments.count, 2)
+        XCTAssertEqual(series.segments.first?.points.map(\.time), [start.addingTimeInterval(5 * 60)])
+        XCTAssertEqual(series.segments.last?.points.map(\.time), [resetAt])
+        // The point that shows the refill is at or after the rule, never before it.
+        for point in series.segments.last?.points ?? [] {
+            XCTAssertGreaterThanOrEqual(point.time, resetAt)
+        }
+    }
+
     // MARK: - Gaps
 
     /// A sleeping Mac produces no observations. Drawing a line across the hole would invent a smooth
