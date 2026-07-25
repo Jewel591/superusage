@@ -101,7 +101,9 @@ final class AppContainer {
             resolveDisplayName: { [accounts] in accounts.resolvedDisplayName(cardID: $0) }
         )
         // Quota history records straight off the refresh success path, so it is wired before the first
-        // pass can run. It opens its database lazily on the first sample, keeping launch off the disk.
+        // pass can run. Nothing here touches the disk — the store opens on the first operation that
+        // needs it, which in practice is the maintenance loop's opening prune rather than the first
+        // sample, and that happens on the store's own actor rather than during launch.
         // The identity map is what keeps two accounts apart: card ids alone don't, because the account
         // holding a family's default home keeps the bare `claude`/`codex` id across a sign-out.
         // The app runs for weeks, so the launch identity map can go stale under it — a sign-out and
