@@ -9,16 +9,24 @@ set -euo pipefail
 #
 # Requires: gh CLI authenticated as a repo admin.
 #
-# Note: `main` is currently unprotected — this has not been run. What it
-# configures is force-push/deletion safety and green CI, not a human
-# hand-off: this repo merges its own PRs (see AGENTS.md), so it requires
-# no approving reviews. It couldn't have any — CODEOWNERS names a single
-# maintainer, and GitHub won't let a PR author approve their own PR, so
-# the approval count this script used to request made every merge here
-# impossible. The quality gate is `codex-passed` on the head commit,
-# enforced by convention rather than by protection, because that status
-# is stamped in-house and a required check would wall off outside
+# What this configures is force-push/deletion safety and green CI, not a
+# human hand-off: this repo merges its own PRs (see AGENTS.md), so it
+# requires no approving reviews. It couldn't have any — CODEOWNERS names a
+# single maintainer, and GitHub won't let a PR author approve their own
+# PR, so the approval count this script used to request made every merge
+# here impossible. The quality gate is `codex-passed` on the head commit,
+# enforced by convention rather than by protection, because that status is
+# stamped in-house and a required check would wall off outside
 # contributions before a maintainer ever looked at them.
+#
+# Every context listed below must be a job that already runs on `main`. A
+# required check that nothing emits doesn't fail the merge — it hangs it,
+# waiting forever for a status that isn't coming. Adding a CI job and
+# requiring it are therefore two separate steps, in that order, with the
+# job merged in between.
+#
+# Running this makes AGENTS.md's "none of this is enforced by GitHub" no
+# longer true of the CI checks. Update that line if you run it.
 
 REPO="${REPO:-Jewel591/superusage}"
 

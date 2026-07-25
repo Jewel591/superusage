@@ -122,8 +122,9 @@ What changes is only who presses Merge. If a PR should *not* land yet, keep it i
 the `hold` label — those still mean stop, and now they are the *only* thing that means stop, since
 nothing else pauses between Ready and merged.
 
-None of this is enforced by GitHub. `main` has no branch protection, and `script/apply_github_protections.sh`
-has never been run; the gates above hold because agents follow them.
+As of this writing none of it is enforced by GitHub — `main` has no branch protection, and
+`script/apply_github_protections.sh` has never been run. The gates above hold because agents follow
+them, not because anything stops an agent that doesn't.
 
 Every PR description must follow this structure so reviewers can skim it quickly:
 
