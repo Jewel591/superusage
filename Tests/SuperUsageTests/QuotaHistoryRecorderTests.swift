@@ -169,6 +169,7 @@ final class QuotaHistoryRecorderTests: XCTestCase {
     /// app running for a trend that is never going to arrive. It has to be reported by card.
     func testCardWithNoResolvedAccountIsReportedAsRecordingNothing() async throws {
         let recorder = makeRecorder(identityKeys: [:])
+        XCTAssertTrue(recorder.recordingGaps.isEmpty, "nothing is claimed before the card has refreshed")
 
         recorder.record(snapshot: snapshot(used: 40, at: capturedAt, accountProof: "account-a"))
         _ = await recorder.flushPendingWrites()
@@ -178,6 +179,30 @@ final class QuotaHistoryRecorderTests: XCTestCase {
         XCTAssertTrue(recorder.pausedCards.isEmpty, "it never reaches the proof check")
         XCTAssertEqual(recorder.recordingGaps.map(\.id), ["claude"])
         XCTAssertEqual(recorder.recordingGaps.first?.reason, .unattributable)
+    }
+
+    /// The report is driven by refreshes, never by the provider catalog — which lists every provider the
+    /// app supports, whether or not this user has the tool, has enabled it, or has ever signed in. A
+    /// refresh that had nothing to record (an error badge, a provider with no capped metric) says nothing
+    /// about attribution, and claiming otherwise would tell someone who doesn't use Codex that their
+    /// Codex history is broken.
+    func testRefreshWithNothingToRecordIsNotReportedAsAnAttributionProblem() async throws {
+        let recorder = makeRecorder(identityKeys: [:])
+
+        recorder.record(snapshot: ProviderSnapshot.error(
+            provider: provider,
+            error: URLError(.notConnectedToInternet)
+        ))
+        recorder.record(snapshot: ProviderSnapshot(
+            providerID: "claude",
+            displayName: "Claude",
+            lines: [.badge(label: "Plan", text: "Max")],
+            refreshedAt: capturedAt
+        ))
+        _ = await recorder.flushPendingWrites()
+
+        XCTAssertTrue(recorder.recordingGaps.isEmpty)
+        XCTAssertTrue(recorder.unattributableCards.isEmpty)
     }
 
     /// A card that resolved but is now returning another account's numbers is a *different* silence: it

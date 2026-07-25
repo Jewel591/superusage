@@ -30,6 +30,14 @@ final class QuotaHistoryRecorder {
     /// otherwise the chart would just stop growing with no stated reason.
     private(set) var pausedCards: Set<String> = []
 
+    /// Cards that produced recordable numbers but that this process never resolved an account for, so
+    /// nothing they report can be keyed and nothing is written for them all session.
+    ///
+    /// Populated from actual refreshes rather than from the provider catalog, which lists every provider
+    /// the app supports whether or not this user has the tool, has it enabled, or is signed in. Reporting
+    /// from the catalog would tell someone who doesn't use Codex that their Codex history is broken.
+    private(set) var unattributableCards: Set<String> = []
+
     /// Serializes "the store is open" across every caller: each operation awaits this one task instead
     /// of racing its own `load()`.
     @ObservationIgnored private var openTask: Task<Void, Error>?
@@ -101,7 +109,11 @@ final class QuotaHistoryRecorder {
         // with no capped metrics, a card whose launch identity never resolved — has no attribution
         // question to answer, and running the proof check on it would park a card in `pausedCards` (and
         // tell the user recording is paused) over a refresh that was never going to write a row.
-        guard !samples.isEmpty, isProven(snapshot) else { return }
+        guard !samples.isEmpty else {
+            noteIfUnattributable(snapshot)
+            return
+        }
+        guard isProven(snapshot) else { return }
         let id = UUID()
         pendingWrites[id] = Task { [weak self] in
             guard let self else { return }
@@ -115,6 +127,34 @@ final class QuotaHistoryRecorder {
                 self.recordingFailure = error.localizedDescription
                 AppLog.error(.history, "sample write failed for \(cardID): \(error.localizedDescription)")
             }
+        }
+    }
+
+    /// Notes a card that had numbers worth recording but no account to key them under.
+    ///
+    /// This is the path `isProven` never sees: the extractor refuses to mint samples for an account-first
+    /// card whose launch identity is unresolved, so `record` returns above with an empty batch and the
+    /// card is never paused, never charted, and never mentioned. A Codex login held in the keychain is
+    /// the ordinary way to end up here (see `DefaultAccountObserver.observeCodex`), and it lasts the
+    /// whole session — so unlike a pause, waiting does not fix it, and the window has to say so.
+    private func noteIfUnattributable(_ snapshot: ProviderSnapshot) {
+        let cardID = snapshot.providerID
+        guard identityKeys[cardID] == nil,
+              ProviderAccountID.families.contains(ProviderAccountID.family(of: cardID)),
+              // Distinguishes "unattributable" from the far more common "nothing to record" — an error
+              // badge or a provider with no capped metric produces the same empty batch.
+              QuotaSampleExtractor.hasRecordableMetrics(
+                  in: snapshot,
+                  descriptors: registry.descriptors(for: cardID)
+              )
+        else { return }
+        // Once per card, not once per refresh: this state can't change until the next launch.
+        if unattributableCards.insert(cardID).inserted {
+            AppLog.warn(
+                .history,
+                "\(cardID): no account resolved for this card at launch, so its refreshes can't be "
+                    + "attributed; nothing will be recorded for it this session"
+            )
         }
     }
 
@@ -159,31 +199,28 @@ final class QuotaHistoryRecorder {
         return true
     }
 
-    /// Every card that is currently recording nothing, and why.
+    /// Every card that has refreshed successfully and recorded nothing anyway, and why.
     ///
-    /// Two different silences, and neither one can be seen from the chart — a card that has never
-    /// recorded has no series, so it isn't even in the picker to be selected and explained:
+    /// Two different silences, and neither is visible from the chart — a card in either state may have
+    /// no series at all, which means it isn't in the picker to be selected and explained:
     ///
-    /// - `.unattributable` — the launch identity pass never named this card's account (a Codex login
-    ///   held in the keychain is the ordinary case), so `QuotaSampleExtractor` produces nothing to key
-    ///   and no row is ever written. Permanent for the life of the process, and *not* something waiting
-    ///   longer fixes, which is exactly why saying nothing would be the wrong answer.
+    /// - `.unattributable` — no account was resolved for the card this launch, so nothing it reports can
+    ///   be keyed. Lasts the whole session; waiting does not fix it. See `noteIfUnattributable`.
     /// - `.mismatched` — the card did resolve, but its refreshes are now coming back from a different
-    ///   account (see `isProven`). Recording is suspended until they match again.
+    ///   account (see `isProven`). Suspended, and resumes by itself when they match again.
     ///
-    /// Only the account-first families can be in either state; everything else is keyed by card id alone
-    /// and always records.
+    /// The two sets are disjoint by construction: a card only reaches the proof check once its identity
+    /// resolved. Ordered by card id so the notices don't reshuffle between renders.
     var recordingGaps: [QuotaHistoryRecordingGap] {
-        registry.providers.compactMap { provider in
-            guard ProviderAccountID.families.contains(ProviderAccountID.family(of: provider.id)) else {
-                return nil
+        let byReason = unattributableCards.map { ($0, QuotaHistoryRecordingGap.Reason.unattributable) }
+            + pausedCards.map { ($0, QuotaHistoryRecordingGap.Reason.mismatched) }
+        return byReason
+            .sorted { $0.0 < $1.0 }
+            .compactMap { cardID, reason in
+                registry.provider(id: cardID).map {
+                    QuotaHistoryRecordingGap(provider: $0, reason: reason)
+                }
             }
-            guard identityKeys[provider.id] != nil else {
-                return QuotaHistoryRecordingGap(provider: provider, reason: .unattributable)
-            }
-            guard pausedCards.contains(provider.id) else { return nil }
-            return QuotaHistoryRecordingGap(provider: provider, reason: .mismatched)
-        }
     }
 
     /// Opens the store and runs retention, independent of whether anything is being written.

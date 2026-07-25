@@ -273,6 +273,13 @@ actor QuotaHistoryStore {
         )
     }
 
+    /// The v1 model, built in code rather than from a `.xcdatamodeld`.
+    ///
+    /// A note for whoever changes it first: this function *is* the only description of v1 that exists, so
+    /// editing it in place leaves nothing for Core Data to migrate **from**, and lightweight migration
+    /// silently has no old model to match. Keep this v1 shape as its own value alongside the new one, and
+    /// pin the change with a real v1 SQLite fixture — a file written by this version — rather than trusting
+    /// a fresh store to prove anything. A fresh store is exactly the case migration doesn't cover.
     private static func makeModel() -> NSManagedObjectModel {
         let entity = NSEntityDescription()
         entity.name = Field.entity
