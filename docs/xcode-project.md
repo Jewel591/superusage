@@ -22,6 +22,37 @@ Because `SuperUsage` dynamically links Sparkle, the app target explicitly embeds
 `Sparkle.framework`. A post-build verification script fails the build if that runtime dependency is
 missing or has an invalid signature.
 
+## Dependency lockfiles (there are two)
+
+The same three remote packages are pinned twice, because two build paths resolve them independently:
+
+| File | Governs |
+| --- | --- |
+| `Package.resolved` | `swift build`, `swift test`, and the CI test job |
+| `superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` | Xcode locally and Xcode Cloud release builds |
+
+Both are committed, and they must name the same version for every dependency they share — otherwise
+the tests prove one version and users get another. Nothing syncs them automatically: Dependabot's
+swift ecosystem only understands the SwiftPM manifest, so its bumps move the first file alone. The
+`Lockfiles agree` CI job fails the PR when they drift apart, including when one has gone missing.
+
+After any dependency change, resolve both and commit both:
+
+```bash
+swift package resolve
+xcodebuild -project superUsage.xcodeproj -scheme superUsage -resolvePackageDependencies
+```
+
+⚠️ On macOS, `xcodebuild -resolvePackageDependencies` writes the Xcode lockfile and then **deletes it
+again** a moment later, so `git status` reports a deletion of a file you did not touch. Don't commit
+that deletion — `git checkout -- <path>` restores it. To capture a genuinely updated one, copy it out
+while the resolve runs, then stage the copy:
+
+```bash
+git hash-object -w /path/to/copy | xargs -I{} git update-index --add --cacheinfo 100644,{},\
+  superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+```
+
 ## Fixed Apple identity
 
 - Team: Chengdu Weisen Quwan Technology Co., Ltd (`C554753V8P`)
