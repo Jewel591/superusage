@@ -977,6 +977,53 @@ final class ClaudeProviderTests: XCTestCase {
         )
     }
 
+    /// The same hazard, reached through the one transform that *narrows* the candidate set: with an
+    /// ambient `CLAUDE_CODE_OAUTH_TOKEN` exported, a stored login that can't read usage (no
+    /// `user:profile` scope) is dropped from the probe order — but it is still a login saved in this
+    /// home, and it may well be the one `.claude.json` names. Asking the probe order who else is in the
+    /// running would answer "nobody" and stamp the *other* login's numbers with this home's name.
+    func testALoginFilteredOutByTheEnvironmentTokenStillCompetesForAttribution() async {
+        let now = SuperUsageISO8601.date(from: "2026-02-20T16:00:00.000Z")!
+        let keychainAccountA = #"{"claudeAiOauth":{"accessToken":"token-A","refreshToken":"refresh-A","subscriptionType":"pro","scopes":["user:profile"]}}"#
+        let http = FakeHTTPClient(response: HTTPResponse(
+            statusCode: 200,
+            headers: [:],
+            body: Data(#"{"five_hour":{"utilization":25,"resets_at":"2099-01-01T00:00:00.000Z"}}"#.utf8)
+        ))
+        let provider = ClaudeProvider(
+            authStore: ClaudeAuthStore(
+                environment: FakeEnvironment([
+                    "CLAUDE_CONFIG_DIR": "/tmp/claude",
+                    // Ambient in the login shell — enough to trigger the narrowing transform.
+                    "CLAUDE_CODE_OAUTH_TOKEN": "env-token"
+                ]),
+                files: FakeFiles([
+                    // B's login is inference-only, so the transform drops it from the probe order…
+                    "/tmp/claude/.credentials.json": #"{"claudeAiOauth":{"accessToken":"token-B","refreshToken":"refresh-B","subscriptionType":"pro","scopes":["user:inference"]}}"#,
+                    // …but B is who this home says is signed in.
+                    "/tmp/claude/.claude.json": #"{"oauthAccount":{"accountUuid":"ACCT-B","organizationUuid":"ORG-B"}}"#
+                ]),
+                keychain: FakeKeychain(keychainAccountA),
+                now: { now }
+            ),
+            usageClient: ClaudeUsageClient(httpClient: http),
+            logUsageScanner: ClaudeLogFixture.scanner(home: nil),
+            now: { now },
+            pricing: { TestPricing.bundled }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertTrue(
+            http.requests.contains { $0.headers.values.contains { $0.contains("token-A") } },
+            "A is the only login that can read usage, so A's token is what fetched"
+        )
+        XCTAssertNil(
+            snapshot.accountProof,
+            "B can't read usage, but it can still be the account this home names — so A's numbers aren't provably B's"
+        )
+    }
+
     /// The ambiguity gate must not swallow the case it shares a shape with. Once the endpoint has
     /// *rejected* the leftover login, it is out of the running, and the survivor is this home's only
     /// working login — which is the ordinary "stale source, fresh re-login elsewhere" recovery the

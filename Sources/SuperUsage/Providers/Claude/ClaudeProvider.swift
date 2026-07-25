@@ -119,8 +119,7 @@ final class ClaudeProvider: ProviderRuntime {
                 authStore.homeAccountIdentityKey()
             )
         }
-        let storedCandidates = credentialLoad.candidates
-        let candidates = storedCandidates.filter {
+        let candidates = credentialLoad.candidates.filter {
             $0.hasUsableAccessToken && (!forceDesktopFallback || $0.source == .desktop)
         }
         if forceDesktopFallback {
@@ -178,7 +177,7 @@ final class ClaudeProvider: ProviderRuntime {
         // through to the next rather than failing the whole refresh; any non-auth error (rate limit,
         // request/transport failure) surfaces immediately so a real outage is never masked as a retry.
         var lastFallbackError: ClaudeAuthError?
-        var credentialGeneration = ClaudeCredentialGeneration(storedCandidates)
+        var credentialGeneration = ClaudeCredentialGeneration(credentialLoad.attributionCandidates)
         // Logins this refresh has *ruled out* — each one the endpoint rejected as unauthenticated. They
         // stop competing for the attribution of whatever succeeds afterwards; see `attributionIsAmbiguous`.
         var eliminatedLogins: Set<Data> = []
@@ -204,7 +203,7 @@ final class ClaudeProvider: ProviderRuntime {
                     homeAccount: homeAccount,
                     attributionIsAmbiguous: Self.attributionIsAmbiguous(
                         winner: state,
-                        among: candidates,
+                        among: credentialLoad.attributionCandidates,
                         eliminated: eliminatedLogins,
                         isBoundToThisHome: { [authStore] in authStore.isBoundToThisHome($0) }
                     )
@@ -263,6 +262,11 @@ final class ClaudeProvider: ProviderRuntime {
     ///
     /// Logins are compared by refresh token (falling back to the access token), so the same login copied
     /// into both stores — or rotated in one of them — is correctly seen as one login, not two.
+    ///
+    /// `among` must be `ClaudeCredentialLoad.attributionCandidates` — every login the home holds — and
+    /// never the probe order: a login that can't *read usage* (no `user:profile` scope) is dropped from
+    /// the probe order once an ambient token exists, yet it can still be the account the home names, and
+    /// a competitor invisible to this check is exactly a competitor that gets ignored.
     static func attributionIsAmbiguous(
         winner: ClaudeCredentialState,
         among candidates: [ClaudeCredentialState],

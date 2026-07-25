@@ -97,7 +97,18 @@ struct ClaudeCredentialGeneration: Equatable, Sendable {
 }
 
 struct ClaudeCredentialLoad: Sendable {
+    /// The credentials the refresh actually probes, in order — after the environment-token transform,
+    /// which can *narrow* the set (see `applyingEnvironmentToken`).
     var candidates: [ClaudeCredentialState]
+    /// Every login this home actually holds, before that narrowing — the set that decides *whose*
+    /// account a reading may be attributed to.
+    ///
+    /// The two differ because a login that can't read usage is still a login: with an ambient
+    /// `CLAUDE_CODE_OAUTH_TOKEN` exported, a stored login lacking the `user:profile` scope drops out of
+    /// `candidates` (it can't serve the usage call), yet it may be exactly the account `.claude.json`
+    /// names. Attributing on the narrowed set would let the *other* saved login's numbers be stamped
+    /// with that name. Attribution questions therefore ask this set; only the fetch asks `candidates`.
+    var attributionCandidates: [ClaudeCredentialState]
     var desktopStatus: ClaudeDesktopCredentialStatus
 }
 
@@ -243,7 +254,11 @@ struct ClaudeAuthStore: Sendable {
         }
 
         let candidates = applyingEnvironmentToken(to: stored)
-        return ClaudeCredentialLoad(candidates: candidates, desktopStatus: desktopStatus)
+        return ClaudeCredentialLoad(
+            candidates: candidates,
+            attributionCandidates: stored,
+            desktopStatus: desktopStatus
+        )
     }
 
     func loadCredentialCandidates() -> [ClaudeCredentialState] {
@@ -358,8 +373,13 @@ struct ClaudeAuthStore: Sendable {
         return expiresAt - now().timeIntervalSince1970 * 1000 <= 5 * 60 * 1000
     }
 
+    /// Built from `attributionCandidates`, not `candidates`: a login the environment transform filters
+    /// out of the probe order is still a login in this home, so it appearing or vanishing mid-refresh is
+    /// a credential change the refresh must notice.
     func credentialGeneration(forceDesktopFallback: Bool = false) -> ClaudeCredentialGeneration {
-        ClaudeCredentialGeneration(loadCredentialSet(forceDesktopFallback: forceDesktopFallback).candidates)
+        ClaudeCredentialGeneration(
+            loadCredentialSet(forceDesktopFallback: forceDesktopFallback).attributionCandidates
+        )
     }
 
     /// Save an OAuth rotation only if the ordered effective candidate set is unchanged. Checking the

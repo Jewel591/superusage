@@ -261,13 +261,17 @@ struct QuotaHistoryView: View {
                 + "reopen superUsage."
         // Deliberately claims nothing about *which* account, because nothing here knows: this is what a
         // shared or ambiguous login looks like, not evidence of a swap. Sending the user to sign the
-        // "original" account back in would be advice for a problem they don't have.
+        // "original" account back in would be advice for a problem they don't have. It also stops short
+        // of promising that one CLI sign-in fixes it: for the two-login case a re-login can write to one
+        // store and leave the other behind (see `orderedStoredCandidates`), which is how this state is
+        // reached in the first place.
         case .unproven:
             return "\(name) is refreshing fine, but those refreshes can't show which account they belong "
                 + "to, so they aren't recorded. That's what a login shared with Claude Desktop, one "
                 + "passed in through the environment, or a home holding more than one saved login looks "
-                + "like. Signing in with its CLI, so this card reads one login of its own, starts the "
-                + "recording."
+                + "like. Recording starts by itself once this card has a single login of its own — "
+                + "signing in with its CLI is what does that, though if you're already signed in, an "
+                + "older saved login is likely still sitting alongside it."
         }
     }
 
