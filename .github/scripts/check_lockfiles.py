@@ -13,8 +13,15 @@ file alone, so a version bump lands in tests while the shipped app keeps linking
 state this repo was actually in (SwiftPM 3.64.5 / Xcode 3.67.0 / neither what a fresh resolve picked).
 Nothing fails when that happens, which is why it went unnoticed; this check is what makes it fail.
 
-Only shared identities are compared, and only version + revision: each file may legitimately list
-dependencies the other doesn't, and `originHash` differs by design.
+The invariant checked is that both files pin the **same set** of dependencies at the same version and
+revision. Comparing only the identities they happen to share would leave the same hole one size
+smaller: a file that lost a pin outright — a half-finished resolve, a bad merge — agrees about
+everything it still lists, while the dependency it dropped gets resolved freshly on that build path,
+which is the exposure this check exists to prevent. `originHash` is excluded; it differs by design.
+
+If a dependency ever legitimately belongs to one path only (a test-only SwiftPM dependency the app
+target never links, say), this check has to be taught about it explicitly. That is the intent: making
+someone say so beats silently accepting every one-sided pin.
 """
 
 import json
@@ -46,24 +53,29 @@ def pins(path: Path) -> dict[str, tuple[str, str]]:
     return resolved
 
 
+def describe(pin: tuple[str, str] | None) -> str:
+    return f"{pin[0]} ({pin[1][:8]})" if pin else "not pinned"
+
+
 def main() -> int:
     swiftpm, xcode = pins(SWIFTPM), pins(XCODE)
-    conflicts = [
-        (identity, swiftpm[identity], xcode[identity])
-        for identity in sorted(swiftpm.keys() & xcode.keys())
-        if swiftpm[identity] != xcode[identity]
+    disagreements = [
+        (identity, swiftpm.get(identity), xcode.get(identity))
+        for identity in sorted(swiftpm.keys() | xcode.keys())
+        if swiftpm.get(identity) != xcode.get(identity)
     ]
-    if not conflicts:
-        print(f"{len(swiftpm.keys() & xcode.keys())} shared dependencies pinned identically")
+    if not disagreements:
+        print(f"{len(swiftpm)} dependencies pinned identically in both files")
         return 0
 
     print("The two Package.resolved files disagree:\n")
-    for identity, (spm_version, spm_revision), (xc_version, xc_revision) in conflicts:
+    for identity, swiftpm_pin, xcode_pin in disagreements:
         print(f"  {identity}")
-        print(f"    Package.resolved                  {spm_version} ({spm_revision[:8]})")
-        print(f"    superUsage.xcodeproj/…/Package.resolved  {xc_version} ({xc_revision[:8]})")
+        print(f"    Package.resolved                         {describe(swiftpm_pin)}")
+        print(f"    superUsage.xcodeproj/…/Package.resolved  {describe(xcode_pin)}")
     print(
-        "\nTests and the shipped app would build against different versions. To sync, resolve both:\n"
+        "\nTests and the shipped app would build against different versions — an unpinned dependency\n"
+        "gets resolved freshly on that build path. To sync, resolve both:\n"
         "  swift package resolve\n"
         "  xcodebuild -project superUsage.xcodeproj -scheme superUsage -resolvePackageDependencies\n"
         "then commit both files. If the Xcode one disappears after that resolve instead of showing up "

@@ -31,10 +31,11 @@ The same three remote packages are pinned twice, because two build paths resolve
 | `Package.resolved` | `swift build`, `swift test`, and the CI test job |
 | `superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` | Xcode locally and Xcode Cloud release builds |
 
-Both are committed, and they must name the same version for every dependency they share — otherwise
+Both are committed, and they must pin the same set of dependencies at the same versions — otherwise
 the tests prove one version and users get another. Nothing syncs them automatically: Dependabot's
 swift ecosystem only understands the SwiftPM manifest, so its bumps move the first file alone. The
-`Lockfiles agree` CI job fails the PR when they drift apart, including when one has gone missing.
+`Lockfiles agree` CI job fails the PR on any disagreement: a version that differs, a dependency
+pinned in one file and not the other, a file that pins nothing, or a file that has gone missing.
 
 After any dependency change, resolve both, then `git add` both:
 
