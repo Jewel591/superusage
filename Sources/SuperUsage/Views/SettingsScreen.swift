@@ -45,6 +45,7 @@ struct SettingsScreen: View {
         @Bindable var transparency = container.transparency
         @Bindable var privacy = container.privacy
         @Bindable var notifications = container.notificationSettings
+        @Bindable var dynamicIsland = container.dynamicIsland
         // Same section rhythm as the dashboard and Customize (all read the density setting).
         return VStack(alignment: .leading, spacing: density.sectionSpacing) {
             section("General") {
@@ -74,6 +75,26 @@ struct SettingsScreen: View {
             section("Appearance") {
                 row("Icon Style") {
                     picker($layout.menuBarStyle, options: MenuBarStyle.allCases, label: \.label)
+                }
+                // The second place starred metrics can appear. Off by default — it watches the screen
+                // edge, so it should be something the user turns on rather than something that starts
+                // happening to them.
+                row("Top Peek") {
+                    Toggle("", isOn: $dynamicIsland.isEnabled)
+                        .settingsSwitchStyle()
+                }
+                Text("Push the pointer into the top edge of the screen to peek at your starred metrics, then move onto the panel for the full readout.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Only offered once the panel exists to open — a recorded combo with the feature off
+                // would be a key that does nothing.
+                if dynamicIsland.isEnabled {
+                    row("Peek Shortcut") {
+                        ShortcutRecorderField(name: .toggleDynamicIsland)
+                    }
                 }
                 row("Theme") {
                     picker($appearance, options: AppearanceSetting.allCases, label: \.label)

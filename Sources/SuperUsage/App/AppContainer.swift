@@ -31,6 +31,9 @@ final class AppContainer {
     /// ephemeral secret-code easter-egg state, and the system accessibility flags it yields to. Read by both
     /// the SwiftUI surface and the AppKit panel (`StatusItemController`).
     let transparency: PopoverTransparencyStore
+    /// Top Peek: the persisted on/off preference for the top-edge peek panel, plus the Reduce Motion
+    /// flag its reveal animation yields to. Read by the Settings toggle and by `DynamicIslandController`.
+    let dynamicIsland: DynamicIslandSettings
     /// The menu bar's screen-share privacy mode: the persisted Hide From Screen Share toggle
     /// plus the live capture signal. Read by `StatusItemImageUpdater` to swap the strip for the
     /// wordmark while the screen is shared or recorded.
@@ -230,6 +233,7 @@ final class AppContainer {
         }
         self.telemetry = telemetry
         self.transparency = PopoverTransparencyStore()
+        self.dynamicIsland = DynamicIslandSettings()
         self.privacy = MenuBarPrivacyStore()
         self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore, accounts] in
             LocalUsageAPI.State(

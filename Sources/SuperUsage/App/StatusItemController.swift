@@ -43,6 +43,10 @@ final class StatusItemController: NSObject {
     /// The standalone Usage History window, reached from the footer's Options menu. Held here so it
     /// outlives the menu click that opens it.
     private let quotaHistoryWindow: QuotaHistoryWindowController
+    /// The Top Peek panel. Assigned after `super.init` because it needs a callback into this controller;
+    /// it arms nothing until the setting is on, so an install that never enables it costs a stored
+    /// property and no monitors.
+    private var dynamicIsland: DynamicIslandController?
     /// The panel's backdrop: an opaque tray by default, swapped to a behind-window vibrancy view when
     /// the transparency style is non-opaque. Built once and toggled, so it can't race the style observer.
     private let backdrop = PopoverBackdropView(cornerRadius: StatusItemController.cornerRadius)
@@ -131,6 +135,14 @@ final class StatusItemController: NSObject {
         }
 
         heightController.installBridge()
+
+        dynamicIsland = DynamicIslandController(
+            container: container,
+            settings: container.dynamicIsland,
+            openPopover: { [weak self] screen in
+                self?.openPopover(on: screen)
+            }
+        )
 
         AppLog.info(.statusItem, "Status item ready (button: \(self.statusItem.button != nil), shortcut: \(KeyboardShortcuts.getShortcut(for: .togglePopover)?.description ?? "none"))")
     }
@@ -283,10 +295,15 @@ final class StatusItemController: NSObject {
     /// Opens the dashboard popover on the Settings screen — Settings is an in-popover screen, not a
     /// separate window. The screen is set before showing the panel so it opens already sized to Settings.
     private func openSettings() {
-        container.layout.screen = .settings
-        if !panel.isVisible {
-            showPanel()
-        }
+        openPopover(on: .settings)
+    }
+
+    /// Opens the popover on a given screen. The one entry point external surfaces use to hand off to the
+    /// popover (the status item's context menu, the Top Peek panel's buttons), so they can't each invent
+    /// their own show-and-navigate order.
+    func openPopover(on screen: PopoverScreen) {
+        container.layout.screen = screen
+        showPopover()
     }
 
     func togglePopover() {

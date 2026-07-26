@@ -22,6 +22,8 @@ the last successful publication time and any CloudKit error. See [CloudKit Sync]
 | Setting | Options | What it does |
 |---|---|---|
 | Icon Style | Text / Bars | How starred metrics render in the menu bar. See [Menu bar](menu-bar.md). |
+| Top Peek | Off / On | Off (default). On lets you push the pointer into the top edge of the screen to peek at your starred metrics, then move onto the panel for meters, reset times, and refresh status. See [Top Peek](top-peek.md). |
+| Peek Shortcut | record a shortcut | Only shown while Top Peek is on. Opens the peek panel from anywhere and leaves it up until you press the combo again or click elsewhere. Click the field and press a combo; the ⓧ clears it. |
 | Theme | System / Light / Dark | App-wide appearance override for the popover. |
 | Density | Default / Compact | Default breathes; Compact is a real information-dense mode — text steps down one size, rows and provider sections pull together, and Customize / Settings rows tighten with them. In both, consecutive one-line metrics (Today / Yesterday / …) pull together; Compact pulls harder. |
 | Time Format | Auto / 12-hour / 24-hour | How exact times read (e.g. "Resets today at 6:38 PM" vs "18:38"). Auto follows the system. |
