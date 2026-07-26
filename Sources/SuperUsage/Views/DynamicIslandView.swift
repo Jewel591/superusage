@@ -28,6 +28,10 @@ struct DynamicIslandView: View {
 
     var body: some View {
         content
+            // The display's budget, applied before `fixedSize` so the ideal height is clamped rather
+            // than merely cropped by the window. The expanded readout puts a scroll view in the slack,
+            // which is what absorbs this on a screen too short for every starred metric.
+            .frame(maxHeight: presentation.maxHeight)
             .background {
                 RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                     .fill(.regularMaterial)
@@ -50,6 +54,8 @@ struct DynamicIslandView: View {
         // beats silently refusing to open, which would just read as the feature being broken.
         if container.privacy.concealUsage {
             notice("Usage hidden while sharing", symbol: "eye.slash")
+        } else if islandContent.isAwaitingData {
+            awaitingDataState
         } else if islandContent.isEmpty {
             emptyState
         } else if presentation.phase == .expanded {
@@ -112,13 +118,30 @@ struct DynamicIslandView: View {
 
     // MARK: - Placeholder states
 
-    /// Nothing starred yet (or nothing with data): point at the screen that fixes it rather than
-    /// showing an empty pill that looks broken.
+    /// Nothing starred yet: point at the screen that fixes it rather than showing an empty pill that
+    /// looks broken.
     private var emptyState: some View {
         Button { actions.openCustomize() } label: {
             notice("Star metrics to see them here", symbol: "star")
         }
         .buttonStyle(.plain)
+    }
+
+    /// Starred, but nothing has data — a first fetch still in flight, or every starred provider failing
+    /// at once. Sending these to Customize would be a lie: there is nothing to star that isn't starred
+    /// already. A failure opens the popover instead, which is where the reason lives.
+    @ViewBuilder
+    private var awaitingDataState: some View {
+        if !container.dataStore.refreshingProviderIDs.isEmpty {
+            notice("Updating…", symbol: "arrow.clockwise")
+        } else if !container.dataStore.providerErrors.isEmpty {
+            Button { actions.openDashboard() } label: {
+                notice("Couldn't refresh — open for details", symbol: "exclamationmark.triangle")
+            }
+            .buttonStyle(.plain)
+        } else {
+            notice("No usage data yet", symbol: "clock")
+        }
     }
 
     private func notice(_ text: String, symbol: String) -> some View {

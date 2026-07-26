@@ -18,6 +18,10 @@ final class DynamicIslandPresentation {
     }
 
     fileprivate(set) var phase: Phase = .hidden
+    /// The tallest the content may lay itself out — the display's budget, published so the readout can
+    /// scroll inside it instead of being clipped by the window. `.infinity` until the panel is placed on
+    /// a screen, which is the only point at which a real budget exists.
+    fileprivate(set) var maxHeight: CGFloat = .infinity
 }
 
 /// A panel that never takes keyboard focus. The peek panel is a read-out the user glances at while
@@ -243,7 +247,10 @@ final class DynamicIslandController {
             try? await Task.sleep(for: Self.dismissDelay)
             guard !Task.isCancelled, let self else { return }
             self.dismissTask = nil
-            guard !self.isPointerOverPanel, !self.pointerIsInKeepAliveZone() else { return }
+            // `isSticky` is re-checked, not just the pointer: the shortcut can pin the panel while this
+            // grace period is still counting down, and a pinned panel must survive a dismissal that was
+            // scheduled before it was pinned.
+            guard !self.isSticky, !self.isPointerOverPanel, !self.pointerIsInKeepAliveZone() else { return }
             self.hide()
         }
     }
@@ -301,6 +308,13 @@ final class DynamicIslandController {
     private func show(on screen: NSScreen, phase: DynamicIslandPresentation.Phase) {
         let panel = ensurePanel()
         generation += 1
+        // Any exit already scheduled belongs to the panel being replaced. `generation` protects against
+        // a fade-out that has already started; this protects against one that hasn't yet, which would
+        // otherwise fire its own `hide()` and take the new panel down with it.
+        dismissTask?.cancel()
+        dismissTask = nil
+        revealTask?.cancel()
+        revealTask = nil
         anchorScreen = screen
         presentation.phase = phase
 
@@ -388,7 +402,6 @@ final class DynamicIslandController {
 
     /// The panel's frame for the content it currently holds, centered under `screen`'s menu bar.
     private func targetFrame(on screen: NSScreen) -> NSRect {
-        let size = contentSize()
         let inset = DynamicIslandGeometry.topInset(
             menuBarInset: DynamicIslandGeometry.menuBarInset(
                 screenFrame: screen.frame,
@@ -399,8 +412,12 @@ final class DynamicIslandController {
             // the two never land on top of each other.
             fallbackInset: NSStatusBar.system.thickness
         )
+        // Hand the display's budget to the content *before* measuring it, so a long starred list reports
+        // the height it will actually scroll at rather than the height it would like.
+        let budget = DynamicIslandGeometry.availableHeight(screenFrame: screen.frame, topInset: inset)
+        if presentation.maxHeight != budget { presentation.maxHeight = budget }
         return DynamicIslandGeometry.panelFrame(
-            size: size,
+            size: contentSize(),
             screenFrame: screen.frame,
             topInset: inset
         )

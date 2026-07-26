@@ -36,7 +36,15 @@ Expanded, after you move onto it:
   provider's last refresh failed; the popover has the reason.
 - **Open superUsage** and **Settings** buttons.
 
-If you haven't starred anything yet, the panel says so and opens Customize when clicked.
+With more starred metrics than fit on your screen, the list scrolls inside the panel — the header and
+the buttons stay put.
+
+When there's nothing to show, the panel says which of the reasons it is:
+
+- **Nothing starred yet** — it says so, and opens Customize when clicked.
+- **Still loading**, or nothing fetched yet — it says it's updating, rather than telling you to go star
+  something you already starred.
+- **Every starred provider failed to refresh** — it says so and opens the popover, where the reason is.
 
 ## Keyboard
 

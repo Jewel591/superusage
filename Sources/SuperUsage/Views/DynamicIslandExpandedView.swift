@@ -19,9 +19,16 @@ struct DynamicIslandExpandedView: View {
             // Reset times are relative ("Resets in 2h 14m"), so they need a clock. This ticks only while
             // the panel is expanded — the compact pill and the hidden panel mount no timeline at all,
             // which is what keeps an always-armed overlay off the CPU while nobody is looking at it.
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                rows(now: context.date)
+            // The rows are the only part that gives: header and footer keep their size, so a starred list
+            // taller than the screen scrolls instead of pushing "Open superUsage" and "Settings" out of
+            // the panel — which on a surface that never takes keyboard focus would put them out of reach
+            // entirely. It only scrolls when it has to; short lists still size the panel to their content.
+            ScrollView {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    rows(now: context.date)
+                }
             }
+            .scrollBounceBehavior(.basedOnSize)
             Divider()
             footer
         }

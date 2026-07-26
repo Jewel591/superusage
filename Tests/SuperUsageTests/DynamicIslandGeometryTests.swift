@@ -156,6 +156,57 @@ final class DynamicIslandGeometryTests: XCTestCase {
         XCTAssertTrue(zone.contains(justBelow), "a few points of overshoot should not dismiss the panel")
     }
 
+    // MARK: - Height budget
+
+    func testAvailableHeightIsWhatIsLeftBelowTheMenuBar() {
+        // The budget handed to the content, so a long starred list scrolls inside the panel instead of
+        // being cropped by it.
+        let budget = DynamicIslandGeometry.availableHeight(screenFrame: notched.frame, topInset: 37)
+        XCTAssertEqual(
+            budget,
+            982 - 37 - DynamicIslandGeometry.menuBarGap - DynamicIslandGeometry.bottomMargin
+        )
+    }
+
+    func testAvailableHeightMatchesTheTallestPanelThatFits() {
+        // The two must agree, or the content would size itself to a budget the window then clamps away.
+        let budget = DynamicIslandGeometry.availableHeight(screenFrame: external.frame, topInset: 24)
+        let frame = DynamicIslandGeometry.panelFrame(
+            size: CGSize(width: 320, height: 10_000),
+            screenFrame: external.frame,
+            topInset: 24
+        )
+        XCTAssertEqual(frame.height, budget)
+        XCTAssertGreaterThanOrEqual(frame.minY, external.frame.minY)
+    }
+
+    func testAvailableHeightStaysPositiveOnADisplayShorterThanItsOwnMenuBar() {
+        // Not a real Mac, but the inset is read from the system rather than derived, so a display that
+        // cannot fit its own reserve must still yield a usable budget rather than a negative one.
+        let tiny = CGRect(x: 0, y: 0, width: 400, height: 30)
+        let budget = DynamicIslandGeometry.availableHeight(screenFrame: tiny, topInset: 37)
+        XCTAssertGreaterThan(budget, 0)
+        let frame = DynamicIslandGeometry.panelFrame(
+            size: CGSize(width: 320, height: 200),
+            screenFrame: tiny,
+            topInset: 37
+        )
+        XCTAssertGreaterThan(frame.height, 0)
+        XCTAssertGreaterThan(frame.width, 0)
+    }
+
+    func testPanelSurvivesANegativeTopInset() {
+        // `topInset` is clamped at its source, but the frame math must not produce an inverted rect even
+        // if a negative one ever reached it.
+        let frame = DynamicIslandGeometry.panelFrame(
+            size: CGSize(width: 320, height: 44),
+            screenFrame: notched.frame,
+            topInset: -50
+        )
+        XCTAssertEqual(frame.height, 44)
+        XCTAssertGreaterThan(frame.width, 0)
+    }
+
     func testKeepAliveZoneEndsWhereThePointerHasClearlyLeft() {
         let panel = DynamicIslandGeometry.panelFrame(
             size: CGSize(width: 320, height: 44),

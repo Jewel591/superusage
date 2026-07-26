@@ -28,8 +28,17 @@ struct DynamicIslandContent: Equatable {
 
     let groups: [Group]
 
+    /// How many metrics were starred before the has-data filter ran. Kept because `groups.isEmpty` alone
+    /// cannot tell "you haven't starred anything" from "your stars haven't loaded yet" — two states that
+    /// need opposite things said about them, and only one of which is fixed in Customize.
+    let starredCount: Int
+
     /// Nothing is starred, every starred provider is turned off, or no starred metric has data yet.
     var isEmpty: Bool { groups.isEmpty }
+
+    /// True when something is starred but nothing survived the has-data filter — loading, or every
+    /// starred provider failing at once.
+    var isAwaitingData: Bool { groups.isEmpty && starredCount > 0 }
 
     /// Every metric across all groups, flattened in display order.
     var metrics: [Metric] { groups.flatMap(\.metrics) }
@@ -68,6 +77,9 @@ enum DynamicIslandContentBuilder {
                 metrics: metrics
             )
         }
-        return DynamicIslandContent(groups: resolved)
+        return DynamicIslandContent(
+            groups: resolved,
+            starredCount: groups.reduce(0) { $0 + $1.metrics.count }
+        )
     }
 }

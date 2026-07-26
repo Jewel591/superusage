@@ -70,6 +70,34 @@ final class DynamicIslandContentTests: XCTestCase {
         XCTAssertTrue(content.isEmpty)
     }
 
+    func testAwaitingDataIsDistinctFromNothingStarred() {
+        // Both render as an empty panel, but they need opposite things said about them: one is fixed in
+        // Customize, the other is fixed by waiting. Telling a user with stars to go star something is
+        // both wrong and unactionable.
+        let unstarred = DynamicIslandContentBuilder.build(groups: [], data: { $0.sample })
+        XCTAssertTrue(unstarred.isEmpty)
+        XCTAssertFalse(unstarred.isAwaitingData)
+        XCTAssertEqual(unstarred.starredCount, 0)
+
+        let loading = DynamicIslandContentBuilder.build(
+            groups: [group("a", noDataPercent("a.nd", "Session"), noDataPercent("a.nd2", "Weekly"))],
+            data: { $0.sample }
+        )
+        XCTAssertTrue(loading.isEmpty)
+        XCTAssertTrue(loading.isAwaitingData)
+        XCTAssertEqual(loading.starredCount, 2)
+    }
+
+    func testAwaitingDataIsFalseOnceAnythingHasData() {
+        let content = DynamicIslandContentBuilder.build(
+            groups: [group("a", percent("a.live", "Session", 41), noDataPercent("a.dark", "Weekly"))],
+            data: { $0.sample }
+        )
+        XCTAssertFalse(content.isAwaitingData)
+        // Counts what was starred, not what survived — that is the whole point of keeping it.
+        XCTAssertEqual(content.starredCount, 2)
+    }
+
     func testAccessibilityTextSummarizesGroups() {
         let content = DynamicIslandContentBuilder.build(
             groups: [group("a", percent("a.m1", "Session", 41), percent("a.m2", "Weekly", 12))],

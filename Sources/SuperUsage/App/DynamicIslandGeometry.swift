@@ -54,16 +54,25 @@ enum DynamicIslandGeometry {
         )
     }
 
+    /// The tallest a panel may be on this display: everything between the bottom of the menu bar and the
+    /// bottom margin. The content is given this budget so it can scroll *inside* the panel — without it,
+    /// a long starred list would simply be cut off by the clamp in `panelFrame`, taking the footer's
+    /// buttons with it on a surface that has no keyboard focus to reach them another way.
+    static func availableHeight(screenFrame: CGRect, topInset: CGFloat) -> CGFloat {
+        let top = screenFrame.maxY - topInset - menuBarGap
+        return max(1, top - screenFrame.minY - bottomMargin)
+    }
+
     /// Where a panel of `size` sits: horizontally centered on the display, hanging just under the menu
-    /// bar. The size is clamped to what the display can hold, so an expansion taller than the screen
-    /// scrolls its content rather than running off the bottom.
+    /// bar. The size is clamped to what the display can hold — a last line of defense, since content
+    /// given the same budget via `availableHeight` scrolls rather than overflowing.
     ///
     /// Coordinates are rounded to whole points — a half-point origin makes text render soft on a 1x
     /// display.
     static func panelFrame(size: CGSize, screenFrame: CGRect, topInset: CGFloat) -> CGRect {
         let width = min(max(size.width, 1), max(1, screenFrame.width - horizontalMargin * 2))
         let top = screenFrame.maxY - topInset - menuBarGap
-        let height = min(max(size.height, 1), max(1, top - screenFrame.minY - bottomMargin))
+        let height = min(max(size.height, 1), availableHeight(screenFrame: screenFrame, topInset: topInset))
         return CGRect(
             x: (screenFrame.midX - width / 2).rounded(),
             y: (top - height).rounded(),
