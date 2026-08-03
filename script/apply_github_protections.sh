@@ -36,7 +36,7 @@ REPO="${REPO:-Jewel591/superusage}"
 # settings, so let GitHub be the judge and surface its error if not.
 echo "==> Branch protection on main (required CI checks, conversation resolution, no force pushes; admins exempt)"
 BRANCH_PROTECTION='{
-  "required_status_checks": {"strict": true, "contexts": ["Build and Test", "Lockfiles agree"]},
+  "required_status_checks": {"strict": true, "contexts": ["Lockfiles agree"]},
   "enforce_admins": false,
   "required_pull_request_reviews": null,
   "restrictions": null,

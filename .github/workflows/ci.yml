@@ -1,5 +1,27 @@
 name: CI
 
+# The macOS `check: Build and Test` job was removed on 2026-08-02. It ran `swift build` + `swift test`
+# on macos-26 for every PR and every push to main, with neither a paths filter nor a concurrency
+# group, and on its own accounted for 980 of the account's 2,063 billed Linux-equivalent Actions
+# minutes in July — 33% of the monthly allowance, and 94% of all macOS minutes across every repo.
+# (macOS bills at 10x Linux.) The account's two other active Swift CI jobs run comparable work for
+# ~1% of the allowance each, because each is gated behind both a paths filter and a
+# `concurrency: cancel-in-progress` group. This one had neither.
+#
+# Where the guarantees went:
+#   - `swift test` — the dev session runs it locally and states the result in the PR description,
+#     per the standing no-CI-tests rule for Apple targets.
+#   - the macOS 15 deployment-floor compile guarantee — re-established at tag time by release.yml,
+#     which builds this same package on macos-26 before signing and notarizing. Low frequency,
+#     explicitly triggered, and not replaceable on Linux, so it stays.
+#
+# Do NOT reintroduce a macOS job in this workflow. macOS belongs only in the low-frequency,
+# tag-triggered release.yml. Note that the obvious throttle does not even apply here: `paths` is a
+# workflow-level trigger filter, not a job attribute, so adding one would also skip the ubuntu
+# `Lockfiles agree` job — which script/apply_github_protections.sh is written to make a required
+# status check (main is unprotected today, so that script has not been run yet). A required check
+# must not sit behind a paths filter, or it hangs at Expected forever on any PR the filter skips.
+
 on:
   push:
     branches: [main]
@@ -27,23 +49,3 @@ jobs:
 
       - name: Compare resolved dependency pins
         run: python3 .github/scripts/check_lockfiles.py
-
-  check:
-    name: Build and Test
-    # Builds against the macOS 26 SDK with the package's macOS 15 deployment target (Package.swift
-    # .macOS(.v15)), so this compiles the whole codebase — including the `if #available(macOS 26, *)`
-    # Liquid Glass branches — for the macOS 15 floor. That is the floor's compile guarantee: a binary
-    # built here reports minos 15.0. We do NOT add a macos-15 runner leg — back-deployment compiles
-    # against the newest SDK, and a stock macos-15 runner ships Swift 6.1 without the macOS 26 SDK, so
-    # it cannot build this package. Runtime verification on Sequoia is a manual smoke pass.
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Build
-        run: swift build
-
-      - name: Run tests
-        run: swift test
