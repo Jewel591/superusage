@@ -18,8 +18,9 @@ name: CI
 # Do NOT reintroduce a macOS job in this workflow. macOS belongs only in the low-frequency,
 # tag-triggered release.yml. Note that the obvious throttle does not even apply here: `paths` is a
 # workflow-level trigger filter, not a job attribute, so adding one would also skip the ubuntu
-# `Lockfiles agree` job — which is a required status check, and required checks must not sit behind
-# a paths filter (they would hang at Expected forever). See script/apply_github_protections.sh.
+# `Lockfiles agree` job — which script/apply_github_protections.sh is written to make a required
+# status check (main is unprotected today, so that script has not been run yet). A required check
+# must not sit behind a paths filter, or it hangs at Expected forever on any PR the filter skips.
 
 on:
   push:
