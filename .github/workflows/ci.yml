@@ -1,5 +1,22 @@
 name: CI
 
+# The macOS `check: Build and Test` job was removed on 2026-08-02. It ran `swift build` + `swift test`
+# on macos-26 for every PR and every push to main, with neither a paths filter nor a concurrency
+# group, and on its own accounted for 980 of the account's 2,063 billed Linux-equivalent Actions
+# minutes in July — 33% of the monthly allowance, and 94% of all macOS minutes across every repo.
+# (macOS bills at 10x Linux.) The three other Apple repos in the account run comparable jobs for
+# ~1% of the allowance each, because they are throttled; this one was not.
+#
+# Where the guarantees went:
+#   - `swift test` — the dev session runs it locally and states the result in the PR description,
+#     per the standing no-CI-tests rule for Apple targets.
+#   - the macOS 15 deployment-floor compile guarantee — re-established at tag time by release.yml,
+#     which builds this same package on macos-26 before signing and notarizing. Low frequency,
+#     explicitly triggered, and not replaceable on Linux, so it stays.
+#
+# If a macOS job is ever reintroduced here, it must carry BOTH a paths filter and
+# `concurrency: cancel-in-progress: true`. Missing either is what made this one run away.
+
 on:
   push:
     branches: [main]
@@ -27,23 +44,3 @@ jobs:
 
       - name: Compare resolved dependency pins
         run: python3 .github/scripts/check_lockfiles.py
-
-  check:
-    name: Build and Test
-    # Builds against the macOS 26 SDK with the package's macOS 15 deployment target (Package.swift
-    # .macOS(.v15)), so this compiles the whole codebase — including the `if #available(macOS 26, *)`
-    # Liquid Glass branches — for the macOS 15 floor. That is the floor's compile guarantee: a binary
-    # built here reports minos 15.0. We do NOT add a macos-15 runner leg — back-deployment compiles
-    # against the newest SDK, and a stock macos-15 runner ships Swift 6.1 without the macOS 26 SDK, so
-    # it cannot build this package. Runtime verification on Sequoia is a manual smoke pass.
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Build
-        run: swift build
-
-      - name: Run tests
-        run: swift test

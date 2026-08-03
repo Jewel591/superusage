@@ -28,7 +28,7 @@ The same three remote packages are pinned twice, because two build paths resolve
 
 | File | Governs |
 | --- | --- |
-| `Package.resolved` | `swift build`, `swift test`, and the CI test job |
+| `Package.resolved` | `swift build` and `swift test`, run locally by whoever is working on the change |
 | `superUsage.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` | Xcode locally and Xcode Cloud release builds |
 
 Both are committed, and they must pin the same set of dependencies at the same version and revision —
