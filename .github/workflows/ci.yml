@@ -4,8 +4,9 @@ name: CI
 # on macos-26 for every PR and every push to main, with neither a paths filter nor a concurrency
 # group, and on its own accounted for 980 of the account's 2,063 billed Linux-equivalent Actions
 # minutes in July — 33% of the monthly allowance, and 94% of all macOS minutes across every repo.
-# (macOS bills at 10x Linux.) The three other Apple repos in the account run comparable jobs for
-# ~1% of the allowance each, because they are throttled; this one was not.
+# (macOS bills at 10x Linux.) The account's two other active Swift CI jobs run comparable work for
+# ~1% of the allowance each, because each is gated behind both a paths filter and a
+# `concurrency: cancel-in-progress` group. This one had neither.
 #
 # Where the guarantees went:
 #   - `swift test` — the dev session runs it locally and states the result in the PR description,
@@ -14,8 +15,11 @@ name: CI
 #     which builds this same package on macos-26 before signing and notarizing. Low frequency,
 #     explicitly triggered, and not replaceable on Linux, so it stays.
 #
-# If a macOS job is ever reintroduced here, it must carry BOTH a paths filter and
-# `concurrency: cancel-in-progress: true`. Missing either is what made this one run away.
+# Do NOT reintroduce a macOS job in this workflow. macOS belongs only in the low-frequency,
+# tag-triggered release.yml. Note that the obvious throttle does not even apply here: `paths` is a
+# workflow-level trigger filter, not a job attribute, so adding one would also skip the ubuntu
+# `Lockfiles agree` job — which is a required status check, and required checks must not sit behind
+# a paths filter (they would hang at Expected forever). See script/apply_github_protections.sh.
 
 on:
   push:
